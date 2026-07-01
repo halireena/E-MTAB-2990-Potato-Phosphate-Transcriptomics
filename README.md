@@ -53,5 +53,5 @@ R · limma · ggplot2 · pheatmap · clusterProfiler · biomaRt · ape
 
 ## 👩‍🔬 Author
 **Halireena Rushdiha Mohomed**  
-MSc Bioinformatics, University of Sharjah  
+MSc Bioinformatics, University of Birmingham Dubai
 Supervised by Dr. Reem
