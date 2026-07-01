@@ -1,7 +1,7 @@
 # E-MTAB-2990-Potato-Phosphate-Transcriptomics
 E-MTAB-2990-Potato-Phosphate-Transcriptomics. First systematic transcriptomic analysis of E-MTAB-2990 — potato phosphate stress response across four cultivars | MSc Bioinformatics internship project
 
-# 🌱 Transcriptomic Analysis of Potato Phosphate Stress Response
+# Transcriptomic Analysis of Potato Phosphate Stress Response
 ### First systematic analysis of E-MTAB-2990 (ArrayExpress)
 
 **MSc Bioinformatics Internship Project**  
@@ -9,7 +9,7 @@ University of Sharjah | Supervised by Dr. Reem
 
 ---
 
-## 📌 Overview
+## Overview
 This repository contains a five-stage R pipeline for the analysis of
 a publicly archived Agilent one-colour microarray dataset (E-MTAB-2990),
 examining how four potato cultivars (*Solanum tuberosum*) respond to
@@ -23,7 +23,7 @@ analysis of this dataset.
 
 ---
 
-## 🔬 Key Findings
+## Key Findings
 - **285 DEGs** in Maris Piper under low phosphate (73% upregulated)
 - Top gene **PGSC0003DMT400069516** — an ABCB19-family auxin efflux
   transporter upregulated ~79-fold; conserved across 21 Solanaceae
@@ -34,7 +34,7 @@ analysis of this dataset.
 
 ---
 
-## 🗂️ Pipeline Structure
+## Pipeline Structure
 
 | Stage | Notebook | Description |
 |-------|----------|-------------|
@@ -46,7 +46,7 @@ analysis of this dataset.
 
 ---
 
-## 🛠️ Tools & Packages
+## Tools & Packages
 R · limma · ggplot2 · pheatmap · clusterProfiler · biomaRt · ape
 
 ---
