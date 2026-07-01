@@ -1,0 +1,895 @@
+---
+title: "Stage 4: Advanced Analysis & Cross-Cultivar Comparison"
+subtitle: "Maris Piper Potato — Phosphate Stress Transcriptomics | E-MTAB-2990"
+author: "MSc Bioinformatics Internship"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 7)
+```
+
+---
+
+# Overview & Learning Goals
+
+This notebook is the final analytical stage of the E-MTAB-2990 phosphate stress project.
+By the end of this stage you will have:
+
+- Compared how all 4 potato cultivars respond to low phosphate (cross-cultivar analysis)
+- Identified which Maris Piper genes are unique vs shared across cultivars
+- Produced 10 publication-quality figures for your report/presentation
+- Understood the biological story told by the data
+
+**What is this dataset?**
+24 Agilent microarray samples from 4 potato cultivars (Maris Piper, Stirling, Pentland Dell, 12601),
+each grown under 2 phosphate conditions: Low P (phosphate starvation) and Regular P (normal).
+3 biological replicates per group. We already identified 962 DEGs in Maris Piper (Stage 2).
+Now we ask: are these genes specific to Maris Piper, or do all cultivars respond the same way?
+
+---
+
+# Load Libraries & Data
+
+```{r load}
+# --- Core libraries ---
+library(limma)       # Microarray statistics (DEG analysis)
+library(ggplot2)     # Plotting
+library(dplyr)       # Data manipulation
+library(pheatmap)    # Heatmaps
+library(RColorBrewer) # Colour palettes
+
+# --- Extra libraries (install if needed) ---
+if (!requireNamespace("ggrepel",       quietly = TRUE)) install.packages("ggrepel")
+if (!requireNamespace("ggVennDiagram", quietly = TRUE)) install.packages("ggVennDiagram")
+library(ggrepel)       # Smart non-overlapping labels on plots
+library(ggVennDiagram) # 4-way Venn diagrams
+
+# --- Set your results folder path ---
+# This is where Stage 1-3 outputs were saved, and where Stage 4 will also save
+results_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/"
+
+# --- Load all previous stage outputs ---
+# normalised_data.RData  → norm_filtered (expression matrix), targets (sample info)
+# DEG_results.RData      → degs_A, degs_B (Stage 2 DEG tables)
+# Stage3_complete.RData  → pgsc_ids_A, pgsc_ids_B (PGSC transcript IDs)
+
+load(paste0(results_path, "normalised_data.RData"))
+load(paste0(results_path, "DEG_results.RData"))
+load(paste0(results_path, "Stage3_complete.RData"))
+
+# --- Load gene annotation from Stage 3 ---
+# Key_genes_annotated.csv has descriptions for acid phosphatases, transporters etc.
+key_genes <- read.csv(paste0(results_path, "Key_genes_annotated.csv"),
+                      stringsAsFactors = FALSE)
+
+cat("✅ All data loaded successfully\n")
+cat("Expression matrix:", nrow(norm_filtered$E), "probes x",
+    ncol(norm_filtered$E), "samples\n\n")
+
+cat("Cultivars and conditions in dataset:\n")
+print(table(targets$Cultivar, targets$Condition))
+# Expected output: 4 cultivars x 2 conditions, 3 replicates each = 24 samples total
+```
+
+---
+
+# 4A: Cross-Cultivar Differential Expression
+
+## Why do this?
+
+In Stage 2 we only looked at Maris Piper. But this dataset has 4 cultivars.
+By running the same Low P vs Reg P comparison in ALL cultivars, we can classify
+each Maris Piper DEG as:
+
+- **Common** — found in all 4 cultivars = universal phosphate starvation response
+- **Cultivar-specific** — found only in Maris Piper = unique to this variety
+- **Partial** — shared between 2 or 3 cultivars
+
+This is important biologically: a gene that responds in ALL cultivars is a core
+phosphate starvation gene. A gene only in Maris Piper might explain why it behaves
+differently from other varieties under stress.
+
+## Build the 8-group design matrix
+
+```{r full-design}
+# We have 4 cultivars x 2 conditions = 8 groups total
+# First, create a group factor combining cultivar and condition
+
+# NOTE: Group names must be valid R variable names (no spaces, can't start with number)
+# We use paste0("cv_", ...) to handle "12601" which starts with a number
+group <- factor(paste0("cv_",
+                       gsub(" ", "_", targets$Cultivar), "_",
+                       gsub(" ", "_", targets$Condition)))
+
+cat("The 8 groups in our design:\n")
+print(levels(group))
+
+# model.matrix() creates the design matrix
+# ~0 + group means: fit a mean for each group (no intercept)
+# This is the standard approach for multi-group comparisons in limma
+design <- model.matrix(~0 + group)
+colnames(design) <- levels(group)  # Give columns clean names matching group levels
+
+cat("\n✅ Full model fitted:", nrow(design), "samples x", ncol(design), "groups\n")
+# Each column = one group; each row = one sample; values are 0 or 1
+```
+
+## Define contrasts (Low P vs Reg P per cultivar)
+
+```{r all-contrasts}
+# A contrast = the comparison we want to make
+# Here we define Low P vs Reg P for each of the 4 cultivars
+# Positive logFC = higher in Low P (upregulated under phosphate starvation)
+
+contrasts_matrix <- makeContrasts(
+  MP_LowP_vs_RegP     = cv_Maris_Piper_Low_P   - cv_Maris_Piper_Reg_P,
+  PD_LowP_vs_RegP     = cv_Pentland_Dell_Low_P  - cv_Pentland_Dell_Reg_P,
+  St_LowP_vs_RegP     = cv_Stirling_Low_P       - cv_Stirling_Reg_P,
+  c12601_LowP_vs_RegP = cv_12601_Low_P          - cv_12601_Reg_P,
+  levels = design
+)
+
+# Fit the linear model, apply contrasts, and run eBayes moderation
+fit  <- lmFit(norm_filtered, design)
+fit2 <- contrasts.fit(fit, contrasts_matrix)
+fit2 <- eBayes(fit2)
+# eBayes = empirical Bayes: borrows information across all genes to
+# stabilise variance estimates — this is why limma works well with small n
+
+cat("✅ Model fitted and eBayes moderation applied\n")
+cat("Contrasts defined:\n")
+print(colnames(contrasts_matrix))
+```
+
+## Extract DEGs per cultivar
+
+```{r degs-per-cultivar}
+# topTable() extracts results for one contrast at a time
+# n = Inf means return ALL probes (not just top N)
+# We store the full results (all probes) AND filtered DEGs separately
+
+degs_MP    <- topTable(fit2, coef = "MP_LowP_vs_RegP",     n = Inf, adjust = "BH")
+degs_PD    <- topTable(fit2, coef = "PD_LowP_vs_RegP",     n = Inf, adjust = "BH")
+degs_St    <- topTable(fit2, coef = "St_LowP_vs_RegP",     n = Inf, adjust = "BH")
+degs_12601 <- topTable(fit2, coef = "c12601_LowP_vs_RegP", n = Inf, adjust = "BH")
+
+# Apply DEG thresholds: adjusted p-value < 0.05 AND |logFC| > 1 (= 2-fold change)
+# adj.P.Val uses Benjamini-Hochberg correction (controls false discovery rate)
+sig_MP    <- degs_MP[degs_MP$adj.P.Val       < 0.05 & abs(degs_MP$logFC)    > 1, ]
+sig_PD    <- degs_PD[degs_PD$adj.P.Val       < 0.05 & abs(degs_PD$logFC)    > 1, ]
+sig_St    <- degs_St[degs_St$adj.P.Val       < 0.05 & abs(degs_St$logFC)    > 1, ]
+sig_12601 <- degs_12601[degs_12601$adj.P.Val < 0.05 & abs(degs_12601$logFC) > 1, ]
+
+cat("=== DEG counts per cultivar (Low P vs Reg P) ===\n")
+cat("Maris Piper:  ", nrow(sig_MP),    "(", sum(sig_MP$logFC > 0),    "up,", sum(sig_MP$logFC < 0),    "down)\n")
+cat("Pentland Dell:", nrow(sig_PD),    "(", sum(sig_PD$logFC > 0),    "up,", sum(sig_PD$logFC < 0),    "down)\n")
+cat("Stirling:     ", nrow(sig_St),    "(", sum(sig_St$logFC > 0),    "up,", sum(sig_St$logFC < 0),    "down)\n")
+cat("12601:        ", nrow(sig_12601), "(", sum(sig_12601$logFC > 0), "up,", sum(sig_12601$logFC < 0), "down)\n")
+
+# --- What to say in your presentation ---
+# Maris Piper has the MOST DEGs → most transcriptionally responsive to phosphate stress
+# 12601 has the FEWEST DEGs → possibly more tolerant / less sensitive
+# More DEGs ≠ "better" — it means the plant is making more molecular adjustments
+```
+
+## Build result lists for downstream analysis
+
+```{r result-lists}
+# We need both the full results (all probes) and the filtered DEG names
+# for the heatmaps and Venn diagram
+
+mp_res <- list(
+  all  = topTable(fit2, coef = "MP_LowP_vs_RegP",     n = Inf, adjust = "BH"),
+  degs = sig_MP
+)
+pd_res <- list(
+  all  = topTable(fit2, coef = "PD_LowP_vs_RegP",     n = Inf, adjust = "BH"),
+  degs = sig_PD
+)
+st_res <- list(
+  all  = topTable(fit2, coef = "St_LowP_vs_RegP",     n = Inf, adjust = "BH"),
+  degs = sig_St
+)
+c1_res <- list(
+  all  = topTable(fit2, coef = "c12601_LowP_vs_RegP", n = Inf, adjust = "BH"),
+  degs = sig_12601
+)
+
+cat("✅ Result lists built for all 4 cultivars\n")
+```
+
+---
+
+# 4B: Sample Annotation for Heatmaps
+
+```{r sample-annotation}
+# Before making heatmaps, we set up:
+# 1. sample_info: a data frame telling pheatmap which sample is which cultivar/condition
+# 2. colour palettes: consistent colours across all figures
+
+# sample_info rows = samples (columns of expression matrix)
+# sample_info columns = metadata we want to show as annotation bars
+sample_info <- data.frame(
+  Cultivar  = targets$Cultivar,
+  Condition = targets$Condition,
+  row.names = colnames(norm_filtered$E)  # must match column names of expression matrix
+)
+
+# Build gene name lookup from Key_genes annotation
+# gsub removes the "[Source:...]" suffix from BioMart descriptions
+gene_name_lookup <- setNames(
+  gsub("\\s*\\[Source:.*\\]", "", key_genes$description),
+  key_genes$ensembl_transcript_id
+)
+
+# Colour palettes — consistent across all figures
+cultivar_colours <- setNames(
+  brewer.pal(4, "Set1"),
+  unique(targets$Cultivar)
+)
+condition_colours <- setNames(
+  brewer.pal(3, "Set2")[1:2],
+  unique(targets$Condition)
+)
+ann_colours <- list(
+  Cultivar  = cultivar_colours,
+  Condition = condition_colours
+)
+
+cat("✅ Sample annotation ready\n")
+cat("Samples annotated:", nrow(sample_info), "\n")
+```
+
+---
+
+# 4C: Heatmap — Top 40 Maris Piper DEGs
+
+```{r heatmap-top40}
+# This heatmap shows expression patterns for the 40 most strongly changed MP genes
+# across ALL 24 samples (all cultivars, both conditions)
+
+# Step 1: Get top 40 MP DEGs by absolute logFC
+top40_ids  <- rownames(head(arrange(sig_MP, desc(abs(logFC))), 40))
+top40_rows <- which(rownames(norm_filtered$E) %in% top40_ids)
+expr_mat   <- norm_filtered$E[top40_rows, ]
+
+# Step 2: Map row indices to PGSC transcript IDs, then to gene names
+pgsc_ids   <- norm_filtered$genes$SystematicName[top40_rows]
+row_labels <- ifelse(
+  !is.na(gene_name_lookup[pgsc_ids]) & nchar(gene_name_lookup[pgsc_ids]) > 2,
+  substr(gene_name_lookup[pgsc_ids], 1, 35),  # Use gene name if available
+  substr(pgsc_ids, 14, 28)                     # Otherwise use short PGSC suffix
+)
+row_labels         <- make.unique(row_labels)  # Ensure no duplicate row names
+rownames(expr_mat) <- row_labels
+
+# Step 3: Z-score scale each row
+# Z-score = (value - row mean) / row SD
+# This centres each gene around 0 so we can compare patterns, not absolute levels
+# Red = above average for that gene; Blue = below average
+expr_scaled <- t(scale(t(expr_mat)))
+
+# Step 4: Plot
+pheatmap(
+  expr_scaled,
+  annotation_col    = sample_info,    # Add Cultivar + Condition colour bars on top
+  annotation_colors = ann_colours,
+  cluster_rows      = TRUE,           # Group genes with similar patterns together
+  cluster_cols      = TRUE,           # Group samples with similar profiles together
+  show_colnames     = FALSE,          # Column names are long filenames — hide them
+  fontsize_row      = 7,
+  color             = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  main              = "Top 40 DEGs — Maris Piper Phosphate Stress\n(Row z-score)"
+)
+
+# --- What to look for ---
+# Columns should cluster into two groups: Low P (orange) and Reg P (teal)
+# Most rows should be red in Low P and blue in Reg P (upregulated under starvation)
+# A small cluster at the bottom = downregulated genes (opposite pattern)
+# Named genes = your key biological hits
+
+# Save to file
+pheatmap(
+  expr_scaled,
+  annotation_col    = sample_info,
+  annotation_colors = ann_colours,
+  cluster_rows      = TRUE,
+  cluster_cols      = TRUE,
+  show_colnames     = FALSE,
+  fontsize_row      = 7,
+  color             = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  main              = "Top 40 DEGs — Maris Piper Phosphate Stress\n(Row z-score)",
+  filename          = paste0(results_path, "Heatmap_top40.png"),
+  width = 10, height = 12
+)
+cat("✅ Saved: Heatmap_top40.png\n")
+```
+
+---
+
+# 4D: Cross-Cultivar LogFC Heatmap
+
+```{r cross-cultivar-heatmap}
+# This heatmap shows the TOP 40 Maris Piper DEGs and their logFC in ALL 4 cultivars
+# Unlike the previous heatmap (which showed raw expression), this shows FOLD CHANGE
+# This directly answers: "Does each cultivar respond the same way?"
+
+# Step 1: Get top 40 MP DEGs and their PGSC IDs
+top_mp   <- head(arrange(sig_MP, desc(abs(logFC))), 40)
+top_pgsc <- norm_filtered$genes$SystematicName[
+              match(rownames(top_mp), rownames(norm_filtered$E))]
+
+# Step 2: Build a matrix of logFC values — one column per cultivar
+# For each of the top 40 MP genes, what was the logFC in each cultivar?
+fc_matrix <- data.frame(
+  Maris_Piper   = mp_res$all[rownames(top_mp), "logFC"],
+  Stirling      = st_res$all[rownames(top_mp), "logFC"],
+  Pentland_Dell = pd_res$all[rownames(top_mp), "logFC"],
+  X12601        = c1_res$all[rownames(top_mp), "logFC"],
+  row.names     = make.unique(ifelse(
+    !is.na(gene_name_lookup[top_pgsc]) & nchar(gene_name_lookup[top_pgsc]) > 2,
+    substr(gene_name_lookup[top_pgsc], 1, 35),
+    substr(top_pgsc, 14, 28)
+  ))
+)
+
+# Step 3: Cap extreme values so the colour scale isn't dominated by outliers
+# Any logFC > 5 or < -5 is capped at ±5
+fc_capped <- as.matrix(fc_matrix)
+fc_capped[fc_capped >  5] <-  5
+fc_capped[fc_capped < -5] <- -5
+
+# Step 4: Plot — note cluster_cols = FALSE (cultivars stay in fixed order)
+pheatmap(
+  fc_capped,
+  cluster_rows    = TRUE,
+  cluster_cols    = FALSE,   # Keep cultivar order fixed for direct comparison
+  color           = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  breaks          = seq(-5, 5, length.out = 101),
+  fontsize_row    = 7,
+  fontsize_col    = 11,
+  main            = "LogFC Across Cultivars — Top 40 Maris Piper DEGs\n(Low P vs Reg P)"
+)
+
+# --- What to look for ---
+# Genes that are uniformly red across all 4 columns = universal phosphate response
+# Genes that are red in MP but white/blue in 12601 = Maris Piper-specific response
+# This figure directly shows cultivar sensitivity differences
+
+pheatmap(
+  fc_capped,
+  cluster_rows    = TRUE,
+  cluster_cols    = FALSE,
+  color           = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  breaks          = seq(-5, 5, length.out = 101),
+  fontsize_row    = 7,
+  fontsize_col    = 11,
+  main            = "LogFC Across Cultivars — Top 40 Maris Piper DEGs\n(Low P vs Reg P)",
+  filename        = paste0(results_path, "Cross_cultivar_heatmap.png"),
+  width = 9, height = 12
+)
+cat("✅ Saved: Cross_cultivar_heatmap.png\n")
+```
+
+---
+
+# 4E: Volcano Plot
+
+```{r volcano}
+# A volcano plot shows ALL tested genes at once
+# X-axis = effect size (logFC): how much did it change?
+# Y-axis = statistical confidence (-log10 p): how sure are we?
+# Genes in the top corners are the most interesting (big change AND highly significant)
+
+# Get full results for MP (all probes, not just DEGs)
+all_mp <- topTable(fit2, coef = "MP_LowP_vs_RegP", n = Inf, adjust = "BH")
+
+# Classify each gene
+all_mp$sig <- ifelse(
+  all_mp$adj.P.Val < 0.05 & abs(all_mp$logFC) > 1,
+  ifelse(all_mp$logFC > 0, "Upregulated", "Downregulated"),
+  "Not significant"
+)
+
+# Select top 20 to label (highest absolute logFC among significant genes)
+top_label       <- all_mp %>% filter(sig != "Not significant") %>%
+                   arrange(desc(abs(logFC))) %>% head(20)
+top_label$label <- substr(rownames(top_label), 1, 20)  # Short label
+
+p_volcano <- ggplot(all_mp, aes(x = logFC, y = -log10(adj.P.Val), colour = sig)) +
+  geom_point(alpha = 0.65, size = 1.8) +
+  scale_colour_manual(values = c(
+    "Upregulated"     = "#C0392B",   # Red
+    "Downregulated"   = "#2980B9",   # Blue
+    "Not significant" = "grey75"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", colour = "grey40",
+             linewidth = 0.4) +   # logFC threshold lines
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey40",
+             linewidth = 0.4) +   # p-value threshold line
+  geom_text_repel(data = top_label, aes(label = label),
+                  size = 2.7, colour = "black", max.overlaps = 15,
+                  segment.colour = "grey60", segment.size = 0.3) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title    = "Volcano Plot — Maris Piper DEGs",
+    subtitle = "Low P vs Reg P | adj.p < 0.05, |logFC| > 1",
+    x        = "Log\u2082 Fold Change",
+    y        = "-log\u2081\u2080(Adjusted P-value)",
+    colour   = NULL
+  ) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "top")
+
+print(p_volcano)
+
+# --- What to look for ---
+# The cloud of grey = most genes don't change (expected)
+# The right side (red) = upregulated in Low P — most of your DEGs
+# Asymmetry (more red than blue) = phosphate starvation mostly ACTIVATES genes
+# Top right corner = strongest hits (high FC + highly significant)
+
+ggsave(paste0(results_path, "Volcano_plot.png"), p_volcano, width = 10, height = 8, dpi = 300)
+cat("✅ Saved: Volcano_plot.png\n")
+```
+
+---
+
+# 4F: Top 10 Up- and Down-regulated Genes
+
+```{r top-degs-barplot}
+# This bar chart shows the 10 most strongly UP and 10 most strongly DOWN genes
+# Ranked by logFC (fold change) — the bigger the bar, the larger the effect
+
+top_up   <- sig_MP %>% arrange(desc(logFC)) %>% head(10)
+top_down <- sig_MP %>% arrange(logFC)        %>% head(10)
+
+top_combined <- rbind(
+  mutate(top_up,   Direction = "Upregulated"),
+  mutate(top_down, Direction = "Downregulated")
+)
+
+# Use PGSC numeric suffix as label (cleaner than full ID)
+top_combined$label <- substr(top_combined$SystematicName, 14, 28)
+
+p_top <- ggplot(top_combined,
+                aes(x = reorder(label, logFC), y = logFC, fill = Direction)) +
+  geom_col(alpha = 0.85) +
+  scale_fill_manual(values = c("Upregulated" = "#C0392B", "Downregulated" = "#2980B9")) +
+  coord_flip() +
+  theme_minimal(base_size = 11) +
+  labs(
+    title    = "Top 10 Up- and Down-regulated DEGs",
+    subtitle = "Maris Piper — Low P vs Reg P",
+    x        = NULL,
+    y        = "Log\u2082 Fold Change",
+    fill     = NULL
+  ) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "top")
+
+print(p_top)
+
+# --- What to look for ---
+# The top upregulated gene has logFC ~6.5 = 2^6.5 ≈ 91-fold higher in Low P!
+# All upregulated bars are longer than downregulated = stronger activation than repression
+# These are your headline genes for the report
+
+ggsave(paste0(results_path, "Top_DEGs_barplot.png"), p_top, width = 10, height = 8, dpi = 300)
+cat("✅ Saved: Top_DEGs_barplot.png\n")
+```
+
+---
+
+# 4G: 4-Way Venn Diagram — DEG Overlap
+
+```{r venn-four-way}
+# A Venn diagram shows how many DEGs are SHARED between cultivars
+# Each circle = one cultivar's DEG list
+# Overlapping regions = genes that are DEGs in multiple cultivars
+
+# Extract PGSC IDs (SystematicName) for each cultivar's significant DEGs
+pgsc_MP    <- sig_MP$SystematicName
+pgsc_PD    <- sig_PD$SystematicName
+pgsc_St    <- sig_St$SystematicName
+pgsc_12601 <- sig_12601$SystematicName
+
+cat("DEG counts entering Venn:\n")
+cat("Maris Piper:", length(pgsc_MP), "\n")
+cat("Pentland Dell:", length(pgsc_PD), "\n")
+cat("Stirling:", length(pgsc_St), "\n")
+cat("12601:", length(pgsc_12601), "\n")
+
+venn_4 <- list(
+  "Maris Piper"   = pgsc_MP,
+  "Stirling"      = pgsc_St,
+  "Pentland Dell" = pgsc_PD,
+  "12601"         = pgsc_12601
+)
+
+p_venn4 <- ggVennDiagram(venn_4, label_alpha = 0, label = "count") +
+  scale_fill_gradient(low = "#d4e8f0", high = "#1a6b8a") +
+  labs(
+    title    = "DEG Overlap Across All 4 Cultivars",
+    subtitle = "Low P vs Reg P | E-MTAB-2990"
+  ) +
+  theme(
+    plot.title      = element_text(face = "bold", hjust = 0.5, size = 13),
+    plot.subtitle   = element_text(hjust = 0.5, colour = "grey40"),
+    legend.position = "none"
+  )
+
+print(p_venn4)
+
+# --- What to look for ---
+# The centre number = genes that respond in ALL 4 cultivars (core response)
+# The MP-only number = genes unique to Maris Piper
+# Large MP-only region = Maris Piper has a cultivar-specific transcriptional response
+# Small 12601 region = 12601 is the least responsive
+
+ggsave(paste0(results_path, "Venn_4cultivar.png"), p_venn4, width = 9, height = 8, dpi = 300)
+cat("✅ Saved: Venn_4cultivar.png\n")
+```
+
+---
+
+# 4H: DEG Response Classification
+
+```{r response-classification}
+# Now we quantify the overlap from the Venn into meaningful categories
+
+common_all   <- Reduce(intersect, list(pgsc_MP, pgsc_St, pgsc_PD, pgsc_12601))
+mp_only      <- setdiff(pgsc_MP, union(union(pgsc_St, pgsc_PD), pgsc_12601))
+mp_pd_shared <- setdiff(intersect(pgsc_MP, pgsc_PD), union(pgsc_St, pgsc_12601))
+mp_st_shared <- setdiff(intersect(pgsc_MP, pgsc_St), union(pgsc_PD, pgsc_12601))
+other        <- setdiff(pgsc_MP,
+                        union(union(mp_only, common_all),
+                              union(mp_pd_shared, mp_st_shared)))
+
+cat("=== RESPONSE CLASSIFICATION ===\n")
+cat("Common (all 4 cultivars):   ", length(common_all),   "\n")
+cat("Maris Piper ONLY:           ", length(mp_only),      "\n")
+cat("MP + Pentland Dell:         ", length(mp_pd_shared), "\n")
+cat("MP + Stirling:              ", length(mp_st_shared), "\n")
+cat("Other combinations:         ", length(other),        "\n")
+cat("Total MP DEGs:              ", length(pgsc_MP),      "\n")
+
+response_df <- data.frame(
+  Category = c("MP unique", "Common\n(all 4)",
+                "MP + Pentland Dell", "MP + Stirling", "Other"),
+  Count    = c(length(mp_only), length(common_all),
+               length(mp_pd_shared), length(mp_st_shared), length(other))
+)
+
+p_response <- ggplot(response_df,
+                     aes(x = reorder(Category, -Count), y = Count, fill = Category)) +
+  geom_col(width = 0.6, show.legend = FALSE, alpha = 0.85) +
+  geom_text(aes(label = Count), vjust = -0.4, size = 5, fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 13) +
+  labs(
+    title    = "Classification of Maris Piper DEGs by Cross-Cultivar Response",
+    subtitle = "Low P vs Reg P | E-MTAB-2990",
+    x        = NULL, y = "Number of DEGs"
+  ) +
+  theme(plot.title = element_text(face = "bold"))
+
+print(p_response)
+
+# --- Key biological insight ---
+# If MP-unique >> Common: Maris Piper has a cultivar-specific stress programme
+# This could explain differences in phosphate use efficiency between varieties
+
+ggsave(paste0(results_path, "Response_classification.png"),
+       p_response, width = 9, height = 6, dpi = 300)
+cat("✅ Saved: Response_classification.png\n")
+```
+
+---
+
+# 4I: Key Gene Families Heatmap
+
+```{r key-gene-heatmap}
+# This is the most biologically meaningful heatmap in the project
+# It shows ONLY acid phosphatases and phosphate transporters
+# These are the canonical genes that every plant upregulates when phosphate is scarce
+# Finding them ALL going up validates the entire analysis
+
+# Filter to the two key gene families
+key_subset <- key_genes[key_genes$Category %in%
+                          c("acid_phosphatase", "phosphate_transport"), ]
+cat("Key gene families:\n")
+print(table(key_subset$Category))
+
+# Match transcript IDs to rows in expression matrix
+key_rows <- match(key_subset$ensembl_transcript_id,
+                  norm_filtered$genes$SystematicName)
+key_rows <- key_rows[!is.na(key_rows)]
+
+expr_key <- norm_filtered$E[key_rows, ]
+
+# Build row labels from descriptions
+valid_idx  <- !is.na(match(key_subset$ensembl_transcript_id,
+                            norm_filtered$genes$SystematicName))
+key_labels <- paste0(
+  gsub("\\s*\\[Source:.*\\]", "", key_subset$description[valid_idx]),
+  " (", key_subset$Category[valid_idx], ")"
+)
+key_labels         <- make.unique(key_labels)
+rownames(expr_key) <- key_labels
+
+# Z-score scale
+expr_key_scaled <- t(scale(t(expr_key)))
+
+# Row annotation bar showing which family each gene belongs to
+row_anno <- data.frame(
+  Family    = key_subset$Category[valid_idx],
+  row.names = key_labels
+)
+
+family_colours <- list(
+  Family = c("acid_phosphatase"   = "#C0392B",
+             "phosphate_transport" = "#2980B9")
+)
+
+pheatmap(
+  expr_key_scaled,
+  annotation_col    = sample_info,
+  annotation_row    = row_anno,
+  annotation_colors = c(ann_colours, family_colours),
+  cluster_rows      = TRUE,
+  cluster_cols      = TRUE,
+  show_colnames     = FALSE,
+  fontsize_row      = 7,
+  color             = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  main              = "Acid Phosphatases & Phosphate Transporters\nMaris Piper — Low P vs Reg P"
+)
+
+# --- What to look for (and say in your presentation) ---
+# ALL genes should be uniformly red in Low P and blue in Reg P — no exceptions
+# This is the textbook phosphate starvation response
+# Acid phosphatases: release phosphate from organic compounds in the soil
+# Phosphate transporters: pump inorganic phosphate from soil into root cells
+# Both gene families activated simultaneously = coordinated phosphate acquisition response
+
+pheatmap(
+  expr_key_scaled,
+  annotation_col    = sample_info,
+  annotation_row    = row_anno,
+  annotation_colors = c(ann_colours, family_colours),
+  cluster_rows      = TRUE,
+  cluster_cols      = TRUE,
+  show_colnames     = FALSE,
+  fontsize_row      = 7,
+  color             = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  main              = "Acid Phosphatases & Phosphate Transporters\nMaris Piper — Low P vs Reg P",
+  filename          = paste0(results_path, "Heatmap_key_genes.png"),
+  width = 12, height = 10
+)
+cat("✅ Saved: Heatmap_key_genes.png\n")
+```
+
+---
+
+# 4J: Functional Category Summary
+
+```{r category-summary}
+# This bar chart summarises the biological functions of ALL annotated DEGs
+# Categories were assigned in Stage 3 based on keyword matching against gene descriptions
+
+category_summary <- data.frame(
+  Category  = c("Membrane Transport", "Lipid Metabolism", "Stress Response",
+                "Cell Wall", "Transcription Factors", "Acid Phosphatase",
+                "Phosphate Transport", "Auxin Signalling"),
+  Count     = c(30, 16, 14, 13, 12, 11, 6, 4),
+  Direction = c("Mixed", "Mostly UP", "Mostly UP", "Mostly UP",
+                "Mixed", "All UP", "All UP", "Mixed")
+)
+
+p_cat <- ggplot(category_summary,
+                aes(x = reorder(Category, Count), y = Count, fill = Direction)) +
+  geom_col(alpha = 0.85, width = 0.7) +
+  scale_fill_manual(values = c(
+    "All UP"    = "#C0392B",
+    "Mostly UP" = "#E67E22",
+    "Mixed"     = "#7F8C8D"
+  )) +
+  coord_flip() +
+  theme_minimal(base_size = 12) +
+  labs(
+    title    = "DEGs by Functional Category",
+    subtitle = "Maris Piper — Low P vs Reg P | Analysis A",
+    x        = NULL, y = "Number of DEGs",
+    fill     = "Expression Direction"
+  ) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+
+print(p_cat)
+
+# --- What to say ---
+# Membrane transport is the largest category — phosphate is a nutrient, so the plant
+# invests heavily in moving molecules around when it is scarce
+# Acid Phosphatase and Phosphate Transport are ALL UP — 100% consistency = strong signal
+# Stress response and cell wall categories = plant is also physically remodelling roots
+
+ggsave(paste0(results_path, "Category_summary_plot.png"),
+       p_cat, width = 9, height = 6, dpi = 300)
+cat("✅ Saved: Category_summary_plot.png\n")
+```
+
+---
+
+# 4K: Co-expression Correlation Matrix
+
+```{r coexpression}
+# A co-expression matrix shows how correlated pairs of genes are with each other
+# across all samples. Pearson r = +1 means perfectly correlated (always go up/down together)
+# r = -1 means perfectly anti-correlated (when one goes up, the other goes down)
+# Genes that are co-expressed are often co-regulated (same transcription factor, same pathway)
+
+# Use all 24 samples for more robust correlation estimates
+# With only 6 MP samples, n is too small for reliable Pearson r
+top50_mp <- sig_MP[order(abs(sig_MP$logFC), decreasing = TRUE), ]
+top50_mp <- head(top50_mp, 50)
+expr_co  <- norm_filtered$E[rownames(top50_mp), ]
+
+cor_mat <- cor(t(expr_co), method = "pearson")
+
+cat("Co-expression matrix dimensions:", nrow(cor_mat), "x", ncol(cor_mat), "\n")
+cat("Mean absolute correlation:", round(mean(abs(cor_mat[upper.tri(cor_mat)])), 3), "\n")
+cat("Highly correlated pairs (r > 0.85):", sum(abs(cor_mat) > 0.85 & cor_mat != 1) / 2, "\n")
+
+# NOTE: We use all 24 samples (not just MP) to maximise statistical power
+# Pearson r is unreliable with only 6 observations
+# We are asking: "do these genes co-vary across ALL conditions and cultivars?"
+
+pheatmap(
+  cor_mat,
+  cluster_rows  = TRUE,
+  cluster_cols  = TRUE,
+  show_rownames = FALSE,
+  show_colnames = FALSE,
+  color         = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  breaks        = seq(-1, 1, length.out = 101),
+  main          = "Co-expression Correlation Matrix\nTop 50 Maris Piper DEGs (all 24 samples)"
+)
+
+# --- What to look for ---
+# Large red block = most genes are positively correlated = co-regulated network
+# Small blue block = downregulated genes moving opposite to the upregulated cluster
+# High mean correlation = genes are genuinely co-regulated, not randomly significant
+
+pheatmap(
+  cor_mat,
+  cluster_rows  = TRUE,
+  cluster_cols  = TRUE,
+  show_rownames = FALSE,
+  show_colnames = FALSE,
+  color         = colorRampPalette(c("#2980B9", "white", "#C0392B"))(100),
+  breaks        = seq(-1, 1, length.out = 101),
+  main          = "Co-expression Correlation Matrix\nTop 50 Maris Piper DEGs (all 24 samples)",
+  filename      = paste0(results_path, "Coexpression_matrix.png"),
+  width = 8, height = 8
+)
+cat("✅ Saved: Coexpression_matrix.png\n")
+```
+
+---
+
+# 4L: Integration Summary Figure
+
+```{r integration-summary}
+# One final bar chart pulling all the numbers together
+# This is useful as a slide in your presentation to orient the audience
+
+summary_data <- data.frame(
+  Analysis = c(
+    "MP DEGs (Analysis A, with outlier)",
+    "MP unique to Maris Piper",
+    "MP DEGs (Analysis B, no outlier)",
+    "MP + Pentland Dell shared",
+    "Common (all 4 cultivars)",
+    "MP + Stirling shared"
+  ),
+  Count = c(
+    length(pgsc_MP),
+    length(mp_only),
+    nrow(degs_B[degs_B$adj.P.Val < 0.05 & abs(degs_B$logFC) > 1, ]),
+    length(mp_pd_shared),
+    length(common_all),
+    length(mp_st_shared)
+  ),
+  Type = c("DEG Analysis", "Cross-cultivar", "DEG Analysis",
+           "Cross-cultivar", "Cross-cultivar", "Cross-cultivar")
+)
+
+p_summary <- ggplot(summary_data,
+                    aes(x = reorder(Analysis, Count), y = Count, fill = Type)) +
+  geom_col(width = 0.65, alpha = 0.85) +
+  geom_text(aes(label = Count), hjust = -0.2, size = 4.5, fontface = "bold") +
+  coord_flip() +
+  scale_fill_manual(values = c("DEG Analysis"  = "#27AE60",
+                                "Cross-cultivar" = "#E74C3C")) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title    = "Summary of All DEG Analyses",
+    subtitle = "Maris Piper Phosphate Stress | E-MTAB-2990",
+    x        = NULL, y = "Number of DEGs", fill = "Analysis type"
+  ) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom") +
+  expand_limits(y = max(summary_data$Count) * 1.15)
+
+print(p_summary)
+
+ggsave(paste0(results_path, "Integration_summary.png"),
+       p_summary, width = 9, height = 6, dpi = 300)
+cat("✅ Saved: Integration_summary.png\n")
+```
+
+---
+
+# Save All Stage 4 Results
+
+```{r save-all}
+cat("=== SAVING ALL STAGE 4 OUTPUTS ===\n\n")
+
+# Save key R objects for future reference
+save(sig_MP, sig_PD, sig_St, sig_12601,
+     mp_res, pd_res, st_res, c1_res,
+     common_all, mp_only, mp_pd_shared, mp_st_shared,
+     sample_info, ann_colours, gene_name_lookup,
+     file = paste0(results_path, "Stage4_complete.RData"))
+
+# Save DEG tables as CSVs
+write.csv(sig_MP,    paste0(results_path, "MP_DEGs_stage4.csv"),    row.names = TRUE)
+write.csv(sig_PD,    paste0(results_path, "PD_DEGs_stage4.csv"),    row.names = TRUE)
+write.csv(sig_St,    paste0(results_path, "St_DEGs_stage4.csv"),    row.names = TRUE)
+write.csv(sig_12601, paste0(results_path, "12601_DEGs_stage4.csv"), row.names = TRUE)
+
+write.csv(data.frame(SystematicName = common_all),
+          paste0(results_path, "Common_response_all_cultivars.csv"), row.names = FALSE)
+write.csv(data.frame(SystematicName = mp_only),
+          paste0(results_path, "MP_unique_DEGs.csv"), row.names = FALSE)
+
+cat("✅ Files saved:\n")
+cat("  Stage4_complete.RData\n")
+cat("  MP_DEGs_stage4.csv\n")
+cat("  PD_DEGs_stage4.csv\n")
+cat("  St_DEGs_stage4.csv\n")
+cat("  12601_DEGs_stage4.csv\n")
+cat("  Common_response_all_cultivars.csv\n")
+cat("  MP_unique_DEGs.csv\n\n")
+
+cat("Figures saved:\n")
+cat("  Heatmap_top40.png\n")
+cat("  Cross_cultivar_heatmap.png\n")
+cat("  Volcano_plot.png\n")
+cat("  Top_DEGs_barplot.png\n")
+cat("  Venn_4cultivar.png\n")
+cat("  Response_classification.png\n")
+cat("  Heatmap_key_genes.png\n")
+cat("  Category_summary_plot.png\n")
+cat("  Coexpression_matrix.png\n")
+cat("  Integration_summary.png\n\n")
+
+cat("🎯 Stage 4 complete!\n")
+```
+
+---
+
+
+
+# Session Info
+
+```{r session}
+sessionInfo()
+```

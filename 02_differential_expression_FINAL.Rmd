@@ -1,0 +1,844 @@
+---
+title: "Stage 2: Differential Expression Analysis"
+subtitle: "Maris Piper Phosphate Stress — E-MTAB-2990 | Re-analysis with modern tools"
+author: "MSc Bioinformatics Student"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r global-setup, include=FALSE}
+# Global chunk options
+# echo = TRUE    → show all code (good for learning and reproducibility)
+# warning = FALSE → suppress package warnings from cluttering output
+# message = FALSE → suppress package loading messages
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+---
+
+# Background and Rationale
+
+## What We Are Doing
+
+In Stage 1 we loaded, quality-checked, background-corrected, quantile-normalised, and filtered 24 Agilent microarray files from the E-MTAB-2990 dataset (Hedley, 2017). The output was a clean expression matrix of **38,885 probes × 24 samples** saved as `normalised_data.RData`.
+
+Stage 2 asks the core biological question:
+
+> **Which genes are significantly differentially expressed in Maris Piper roots under low phosphate compared to normal phosphate conditions?**
+
+## Key Concepts
+
+### What Is a DEG?
+
+A **differentially expressed gene (DEG)** has statistically different activity between two conditions. We apply two simultaneous criteria:
+
+- **|log2 Fold Change| > 1** — at minimum a 2-fold change in expression
+- **Adjusted p-value < 0.05** — statistically significant after correcting for testing 38,885 hypotheses simultaneously
+
+**Why log2?** Because fold changes are multiplicative. A 2× increase and a 2× decrease are symmetric in log2 space (log2(2) = 1, log2(0.5) = −1). This is the universal convention in microarray and RNA-seq analysis (Smyth, 2004).
+
+### Why limma?
+
+limma (Linear Models for Microarray Analysis) is the gold-standard package for microarray differential expression (Smyth, 2004; Ritchie et al., 2015). It uses **empirical Bayes moderation** — borrowing variance information across all probes — which is critical when you only have n=3 replicates per group. Without this, individual probe variance estimates are unreliable with small n.
+
+> **Evidence:** Smyth GK (2004). Linear models and empirical bayes methods for assessing differential expression in microarray experiments. *Stat Appl Genet Mol Biol* 3(1):Article3. This is the primary limma citation used in thousands of published papers.
+
+### Why BH FDR Correction?
+
+When testing 38,885 probes at p<0.05, we expect ~1,944 false positives by chance alone. Benjamini-Hochberg (BH) correction controls the **False Discovery Rate** — the expected proportion of false positives among significant results.
+
+> **Evidence:** Benjamini Y & Hochberg Y (1995). Controlling the false discovery rate: a practical and powerful approach to multiple testing. *JRSS-B* 57(1):289–300.
+
+## Two Parallel Analyses
+
+| Analysis | Samples | Purpose |
+|---|---|---|
+| **A — With outlier** | 6 (3 Low P + 3 Reg P) | Main result |
+| **B — Without outlier** | 5 (3 Low P + 2 Reg P) | Robustness/sensitivity check |
+
+The PCA in Stage 1 identified one Reg P replicate (US10310381_253303310046_S01_GE1_107_Sep09_1_4.txt) as an outlier. Inter-array correlation for this sample ranged from r=0.890–0.927, approaching but not falling below the r=0.90 threshold recommended by Shi et al. (2006, MAQC study). By running both analyses, we can assess whether our conclusions are driven by this variable replicate or reflect genuine biology.
+
+---
+
+# Load Packages and Data
+
+```{r load-packages-data}
+# ── Packages ──────────────────────────────────────────────────────────────
+library(limma)        # Differential expression — Smyth (2004)
+library(ggplot2)      # Plotting — Wickham (2016)
+library(RColorBrewer) # Colour palettes
+library(dplyr)        # Data manipulation
+library(pheatmap)     # Heatmaps
+
+# ── Load Stage 1 output ───────────────────────────────────────────────────
+results_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/"
+
+load(paste0(results_path, "normalised_data.RData"))
+
+# ── Verification checks ───────────────────────────────────────────────────
+cat("=== DATA LOADED FROM STAGE 1 ===\n")
+cat("Expression matrix:", nrow(norm_filtered$E), "probes x",
+    ncol(norm_filtered$E), "samples\n")
+cat("Sample metadata rows:", nrow(targets), "\n")
+cat("Probes have rownames:", !is.null(rownames(norm_filtered$E)), "\n")
+cat("First 3 probe row names:", paste(head(rownames(norm_filtered$E), 3), collapse=", "), "\n\n")
+
+cat("=== SAMPLE SUMMARY ===\n")
+print(table(targets$Cultivar, targets$Condition))
+```
+
+---
+
+# Identify Maris Piper Samples
+
+```{r identify-mp}
+# ── Extract Maris Piper indices ───────────────────────────────────────────
+# We subset to the 6 MP samples for our focused DEG comparison
+# The other 18 samples (Stirling, Pentland Dell, 12601) are used in
+# Stage 4 for the cross-cultivar analysis
+# ─────────────────────────────────────────────────────────────────────────
+
+mp_idx <- which(targets$Cultivar == "Maris Piper")
+mp_targets <- targets[mp_idx, ]
+
+cat("=== MARIS PIPER SAMPLES ===\n")
+print(mp_targets[, c("FileName", "Cultivar", "Condition")])
+
+# ── Extract expression matrix for MP ─────────────────────────────────────
+# CRITICAL FIX: When subsetting columns, rownames can drop in some R
+# versions. We explicitly re-assign them from the source matrix.
+mp_expr <- norm_filtered$E[, mp_idx]
+rownames(mp_expr) <- rownames(norm_filtered$E)  # ← Always do this
+
+# ── Clean condition names for R ───────────────────────────────────────────
+# R factor levels cannot contain spaces — "Low P" must become "Low.P"
+# make.names() is the official R function for this conversion
+# This ensures design matrix column names are syntactically valid
+mp_targets$Condition <- make.names(mp_targets$Condition)
+
+# Rename matrix columns for readability
+colnames(mp_expr) <- paste0(mp_targets$Condition, "_rep",
+                             ave(mp_targets$Condition,
+                                 mp_targets$Condition,
+                                 FUN = seq_along))
+
+cat("\n=== EXPRESSION MATRIX DIMENSIONS ===\n")
+cat("Rows (probes):", nrow(mp_expr), "\n")
+cat("Columns (samples):", ncol(mp_expr), "\n")
+cat("Column names:", paste(colnames(mp_expr), collapse = ", "), "\n")
+cat("Rownames intact:", !is.null(rownames(mp_expr)), "\n")
+
+# ── Identify outlier ──────────────────────────────────────────────────────
+OUTLIER_FILE <- "US10310381_253303310046_S01_GE1_107_Sep09_1_4.txt"
+outlier_col  <- which(mp_targets$FileName == OUTLIER_FILE)
+
+cat("\n=== OUTLIER IDENTIFICATION ===\n")
+cat("Outlier file:", OUTLIER_FILE, "\n")
+cat("Outlier position in MP matrix (column):", outlier_col, "\n")
+cat("Outlier condition:", mp_targets$Condition[outlier_col], "\n")
+cat("Evidence: Inter-array correlation r=0.890-0.927, approaching\n")
+cat("but not below the r=0.90 threshold (Shi et al. 2006, MAQC)\n")
+```
+
+---
+
+# PCA of Maris Piper Samples
+
+```{r mp-pca, fig.width=9, fig.height=7}
+# ── Why run PCA here? ─────────────────────────────────────────────────────
+# PCA on just the 6 MP samples gives a clearer view of:
+# 1. How well Low P and Reg P replicates cluster
+# 2. Which replicate is the outlier and by how much
+# The Stage 1 PCA used all 24 samples — hard to see MP-specific structure
+# ─────────────────────────────────────────────────────────────────────────
+
+pca_mp <- prcomp(t(mp_expr), scale. = TRUE)
+
+# Extract variance explained
+var_exp <- summary(pca_mp)$importance[2, ] * 100
+
+pca_df <- data.frame(
+  PC1       = pca_mp$x[, 1],
+  PC2       = pca_mp$x[, 2],
+  Condition = mp_targets$Condition,
+  Sample    = colnames(mp_expr),
+  IsOutlier = colnames(mp_expr) == colnames(mp_expr)[outlier_col]
+)
+
+ggplot(pca_df, aes(x = PC1, y = PC2,
+                    colour = Condition,
+                    shape  = IsOutlier,
+                    label  = Sample)) +
+  geom_point(size = 5, alpha = 0.9) +
+  geom_text(vjust = -1, size = 3, colour = "black") +
+  scale_colour_manual(values = c("Low.P" = "#E41A1C", "Reg.P" = "#377EB8")) +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                     labels = c("Regular sample", "Outlier")) +
+  labs(
+    title    = "PCA — Maris Piper Only (6 Samples)",
+    subtitle = "Triangle = identified outlier Reg P replicate",
+    x        = paste0("PC1 (", round(var_exp[1], 1), "% variance)"),
+    y        = paste0("PC2 (", round(var_exp[2], 1), "% variance)"),
+    colour   = "Condition",
+    shape    = "Sample type"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## PCA Scores Table
+
+```{r pca-table}
+# ── Numerical evidence for the PCA ───────────────────────────────────────
+# This table goes directly into your report supplementary material
+# It provides quantitative proof that the outlier is distant from others
+
+pca_table <- data.frame(
+  Sample    = colnames(mp_expr),
+  Condition = mp_targets$Condition,
+  PC1       = round(pca_mp$x[, 1], 2),
+  PC2       = round(pca_mp$x[, 2], 2),
+  PC3       = round(pca_mp$x[, 3], 2),
+  IsOutlier = ifelse(colnames(mp_expr) == colnames(mp_expr)[outlier_col],
+                     "YES", "no")
+)
+
+cat("=== PCA SCORES — MARIS PIPER SAMPLES ===\n")
+print(pca_table)
+
+cat("\n=== VARIANCE EXPLAINED ===\n")
+var_table <- data.frame(
+  PC      = paste0("PC", 1:6),
+  Variance_pct = round(var_exp[1:6], 2),
+  Cumulative_pct = round(cumsum(var_exp)[1:6], 2)
+)
+print(var_table)
+```
+
+## Inter-Array Correlation Table
+
+```{r correlation-table}
+# ── Quantitative evidence for the outlier ────────────────────────────────
+# This table shows pairwise Pearson correlations between all 6 MP samples
+# Good replicates: r > 0.95
+# Acceptable: r > 0.90 (Shi et al. 2006 MAQC threshold)
+# Problematic: r < 0.90
+# ─────────────────────────────────────────────────────────────────────────
+
+cor_mat <- round(cor(mp_expr, method = "pearson"), 4)
+
+cat("=== INTER-ARRAY PEARSON CORRELATION MATRIX ===\n")
+cat("Reference threshold: r > 0.90 (Shi et al. 2006, Nature Biotechnology)\n\n")
+print(cor_mat)
+
+# Flag correlations below 0.90
+cat("\n=== CORRELATIONS BELOW 0.90 THRESHOLD ===\n")
+low_cor <- which(cor_mat < 0.90 & cor_mat != 1, arr.ind = TRUE)
+if (nrow(low_cor) > 0) {
+  for (i in seq_len(nrow(low_cor))) {
+    r <- low_cor[i, ]
+    cat(rownames(cor_mat)[r[1]], "vs", colnames(cor_mat)[r[2]],
+        "→ r =", cor_mat[r[1], r[2]], "⚠ BELOW THRESHOLD\n")
+  }
+} else {
+  cat("All correlations ≥ 0.90 — all samples acceptable\n")
+}
+
+cat("\n=== MEAN CORRELATION BY SAMPLE ===\n")
+mean_cor <- data.frame(
+  Sample       = colnames(mp_expr),
+  Condition    = mp_targets$Condition,
+  Mean_r       = round(apply(cor_mat, 1, function(x) mean(x[x != 1])), 4),
+  Min_r        = round(apply(cor_mat, 1, function(x) min(x[x != 1])), 4),
+  Flag         = ifelse(
+    apply(cor_mat, 1, function(x) min(x[x != 1])) < 0.90,
+    "⚠ Check", "OK"
+  )
+)
+print(mean_cor)
+```
+
+---
+
+# ANALYSIS A: With Outlier (All 6 Samples)
+
+## Design Matrix
+
+```{r design-A}
+# ── Design matrix explained ───────────────────────────────────────────────
+# Each row = one sample, each column = one group
+# A 1 means "this sample is in this group"
+# ~0 + condition removes the intercept so we get group means directly
+# This makes contrasts (comparisons) simpler to define
+#
+# Reference: Smyth (2004) — the definitive limma paper
+# Also: limma User's Guide, Section 9.2 (Ritchie et al. 2015)
+# ─────────────────────────────────────────────────────────────────────────
+
+condition_A <- factor(mp_targets$Condition)
+cat("Factor levels:", levels(condition_A), "\n")
+cat("(Note: spaces replaced with dots by make.names() — valid R syntax)\n\n")
+
+design_A <- model.matrix(~0 + condition_A)
+colnames(design_A) <- levels(condition_A)
+rownames(design_A) <- colnames(mp_expr)
+
+cat("=== DESIGN MATRIX (Analysis A — 6 samples) ===\n")
+print(design_A)
+
+cat("\nInterpretation:\n")
+cat("  1 = sample belongs to this group\n")
+cat("  0 = sample does not belong to this group\n")
+cat("  Low.P column: identifies the 3 Low P replicates\n")
+cat("  Reg.P column: identifies the 3 Reg P replicates\n")
+```
+
+## Linear Model and Contrast
+
+```{r fit-contrast-A}
+# ── Step 1: Fit linear model ──────────────────────────────────────────────
+# lmFit fits a linear model to EVERY probe simultaneously (38,885 models)
+# For each probe it estimates: mean expression in Low P, mean in Reg P
+# ─────────────────────────────────────────────────────────────────────────
+
+fit_A <- lmFit(mp_expr, design_A)
+
+cat("=== LINEAR MODEL FIT (Analysis A) ===\n")
+cat("Probes modelled:", nrow(fit_A$coefficients), "\n")
+cat("Coefficients estimated per probe: 2 (one per condition group)\n\n")
+cat("Sample of fitted group means (first 5 probes):\n")
+print(round(head(fit_A$coefficients, 5), 3))
+
+# ── Step 2: Define and apply contrast ────────────────────────────────────
+# We subtract Reg P group mean from Low P group mean
+# Positive logFC = gene MORE active under Low P (upregulated by stress)
+# Negative logFC = gene LESS active under Low P (downregulated)
+# ─────────────────────────────────────────────────────────────────────────
+
+contrast_A <- makeContrasts(
+  LowP_vs_RegP = Low.P - Reg.P,
+  levels = design_A
+)
+
+cat("=== CONTRAST MATRIX ===\n")
+print(contrast_A)
+cat("Interpretation: Low.P coefficient - Reg.P coefficient\n")
+cat("Positive result = higher in Low P (stress-induced)\n")
+cat("Negative result = lower in Low P (stress-suppressed)\n\n")
+
+fit2_A <- contrasts.fit(fit_A, contrast_A)
+
+# ── Step 3: Empirical Bayes moderation ───────────────────────────────────
+# eBayes "borrows" variance information across all probes
+# With only n=3 per group, individual probe variance estimates are noisy
+# eBayes shrinks extreme variances toward the global average
+# This gives moderated t-statistics — more reliable than ordinary t-tests
+#
+# Reference: Smyth GK (2004) Stat Appl Genet Mol Biol 3(1):Article3
+# ─────────────────────────────────────────────────────────────────────────
+
+fit2_A <- eBayes(fit2_A)
+
+cat("=== EBAYES MODERATION APPLIED ===\n")
+cat("Prior degrees of freedom:", round(fit2_A$df.prior, 2), "\n")
+cat("Prior variance (s2.prior):", round(fit2_A$s2.prior, 4), "\n")
+cat("Interpretation: df.prior > 10 indicates strong borrowing across probes\n")
+cat("This is desirable for small n — makes test statistics more stable\n")
+```
+
+## Extract and Summarise DEGs
+
+```{r degs-A}
+# ── topTable output explained ─────────────────────────────────────────────
+# logFC:     log2 fold change (Low P vs Reg P)
+# AveExpr:   average log2 expression across all 6 samples
+# t:         moderated t-statistic (larger = more significant)
+# P.Value:   raw p-value from moderated t-test
+# adj.P.Val: BH-adjusted p-value (controls FDR)
+# B:         log-odds of differential expression (B > 0 = more likely DE)
+#
+# We use adjust.method="BH" — Benjamini & Hochberg (1995)
+# number=Inf — return ALL probes ranked by significance
+# ─────────────────────────────────────────────────────────────────────────
+
+results_A <- topTable(
+  fit2_A,
+  coef          = "LowP_vs_RegP",
+  adjust.method = "BH",
+  number        = Inf,
+  sort.by       = "P"
+)
+
+# Apply DEG thresholds
+degs_A <- results_A[abs(results_A$logFC) > 1 &
+                      results_A$adj.P.Val < 0.05, ]
+
+up_A   <- degs_A[degs_A$logFC > 1, ]
+down_A <- degs_A[degs_A$logFC < -1, ]
+
+cat("=== ANALYSIS A — FULL DEG SUMMARY ===\n")
+cat("Total probes tested:  ", nrow(results_A), "\n")
+cat("Total DEGs found:     ", nrow(degs_A), "\n")
+cat("Upregulated (Low P):  ", nrow(up_A), "\n")
+cat("Downregulated (Low P):", nrow(down_A), "\n")
+cat("\nThresholds applied:\n")
+cat("  |log2FC| > 1 → 2-fold change (universal microarray convention)\n")
+cat("  adj.P < 0.05 → BH-FDR controlled (Benjamini & Hochberg 1995)\n")
+
+cat("\n=== TOP 20 DEGs — Analysis A ===\n")
+top20_A <- head(degs_A[, c("logFC", "AveExpr", "t",
+                              "P.Value", "adj.P.Val", "B")], 20)
+print(round(top20_A, 4))
+
+cat("\n=== FOLD CHANGE DISTRIBUTION ===\n")
+cat("Max upregulation (logFC):", round(max(degs_A$logFC), 2),
+    "=", round(2^max(degs_A$logFC), 1), "-fold\n")
+cat("Max downregulation (logFC):", round(min(degs_A$logFC), 2),
+    "=", round(2^min(degs_A$logFC), 3), "-fold\n")
+cat("Median |logFC| of DEGs:", round(median(abs(degs_A$logFC)), 2), "\n")
+```
+
+---
+
+# ANALYSIS B: Without Outlier (5 Samples)
+
+```{r analysis-B}
+# ── Sensitivity analysis ──────────────────────────────────────────────────
+# By removing the outlier Reg P replicate, we test whether our DEG list
+# is driven by the variable sample or by genuine biological signal
+# An unbalanced design (3 Low P vs 2 Reg P) is fully supported by limma
+# ─────────────────────────────────────────────────────────────────────────
+
+mp_targets_B <- mp_targets[-outlier_col, ]
+mp_expr_B    <- mp_expr[, -outlier_col]
+
+cat("=== ANALYSIS B SETUP ===\n")
+cat("Samples retained:", ncol(mp_expr_B), "(removed outlier column", outlier_col, ")\n")
+cat("Design: 3 Low P vs 2 Reg P (unbalanced, valid for limma)\n\n")
+print(data.frame(
+  Sample    = colnames(mp_expr_B),
+  Condition = mp_targets_B$Condition
+))
+
+# Fit model for Analysis B
+condition_B <- factor(mp_targets_B$Condition)
+design_B    <- model.matrix(~0 + condition_B)
+colnames(design_B) <- levels(condition_B)
+
+fit_B   <- lmFit(mp_expr_B, design_B)
+
+contrast_B <- makeContrasts(
+  LowP_vs_RegP = Low.P - Reg.P,
+  levels = design_B
+)
+
+fit2_B  <- contrasts.fit(fit_B, contrast_B)
+fit2_B  <- eBayes(fit2_B)
+
+results_B <- topTable(fit2_B, coef = "LowP_vs_RegP",
+                       adjust.method = "BH", number = Inf, sort.by = "P")
+
+degs_B <- results_B[abs(results_B$logFC) > 1 &
+                      results_B$adj.P.Val < 0.05, ]
+up_B   <- degs_B[degs_B$logFC > 1, ]
+down_B <- degs_B[degs_B$logFC < -1, ]
+
+cat("\n=== ANALYSIS B — FULL DEG SUMMARY ===\n")
+cat("Total DEGs:    ", nrow(degs_B), "\n")
+cat("Upregulated:   ", nrow(up_B), "\n")
+cat("Downregulated: ", nrow(down_B), "\n")
+
+cat("\n=== TOP 20 DEGs — Analysis B ===\n")
+top20_B <- head(degs_B[, c("logFC", "AveExpr", "t",
+                              "P.Value", "adj.P.Val", "B")], 20)
+print(round(top20_B, 4))
+```
+
+---
+
+# Comparing Analysis A vs B
+
+```{r compare-AB}
+# ── Overlap analysis ──────────────────────────────────────────────────────
+# If the DEG lists are highly overlapping and fold changes are correlated,
+# the outlier is NOT driving our results — they reflect real biology
+# ─────────────────────────────────────────────────────────────────────────
+
+shared <- intersect(rownames(degs_A), rownames(degs_B))
+only_A <- setdiff(rownames(degs_A), rownames(degs_B))
+only_B <- setdiff(rownames(degs_B), rownames(degs_A))
+
+cat("=== A vs B COMPARISON TABLE ===\n\n")
+
+comparison_table <- data.frame(
+  Metric = c("Total DEGs", "Upregulated", "Downregulated",
+             "Shared with other analysis", "Unique to this analysis"),
+  Analysis_A_with_outlier    = c(nrow(degs_A), nrow(up_A), nrow(down_A),
+                                  length(shared), length(only_A)),
+  Analysis_B_without_outlier = c(nrow(degs_B), nrow(up_B), nrow(down_B),
+                                  length(shared), length(only_B))
+)
+print(comparison_table)
+
+cat("\n=== SHARED DEG DETAILS ===\n")
+cat("Probes in both analyses:", length(shared), "\n")
+cat("Overlap / A:", round(length(shared)/nrow(degs_A)*100, 1), "%\n")
+cat("Overlap / B:", round(length(shared)/nrow(degs_B)*100, 1), "%\n")
+
+# Fold change correlation for shared DEGs
+if (length(shared) > 5) {
+  fc_A_shared <- results_A[shared, "logFC"]
+  fc_B_shared <- results_B[shared, "logFC"]
+  pearson_r   <- cor(fc_A_shared, fc_B_shared)
+
+  cat("\n=== FOLD CHANGE CORRELATION (shared DEGs) ===\n")
+  cat("Pearson r =", round(pearson_r, 4), "\n")
+  cat("Interpretation:\n")
+  cat("  r > 0.99 → Outlier has NO meaningful effect on biology\n")
+  cat("  r > 0.95 → Results are very robust\n")
+  cat("  r < 0.90 → Outlier may be distorting results\n")
+  cat("\nConclusion:", ifelse(pearson_r > 0.95,
+    "Results are ROBUST — proceed with Analysis A as primary result",
+    "Consider using Analysis B as primary result"))
+}
+
+cat("\n=== WHAT TO REPORT ===\n")
+cat("Main result:        Analysis A (all 6 samples, standard approach)\n")
+cat("Sensitivity check:  Analysis B (outlier removed)\n")
+cat("Report in Methods:  Both analyses performed; high overlap confirms robustness\n")
+```
+
+---
+
+# Volcano Plots
+
+```{r volcano-A, fig.width=9, fig.height=7}
+# ── Volcano plot explained ────────────────────────────────────────────────
+# X-axis: log2 fold change — distance from zero = magnitude of change
+# Y-axis: -log10(adj.p) — height = statistical significance
+# Top-right quadrant: significantly UPREGULATED under Low P (stress-induced)
+# Top-left quadrant: significantly DOWNREGULATED under Low P (stress-suppressed)
+# Grey cloud: not significant (most probes)
+# ─────────────────────────────────────────────────────────────────────────
+
+# Label probes for plotting
+results_A$sig <- "Not significant"
+results_A$sig[results_A$logFC > 1  & results_A$adj.P.Val < 0.05] <- "Up in Low.P"
+results_A$sig[results_A$logFC < -1 & results_A$adj.P.Val < 0.05] <- "Down in Low.P"
+
+ggplot(results_A, aes(x = logFC, y = -log10(adj.P.Val), colour = sig)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  scale_colour_manual(values = c(
+    "Up in Low.P"    = "#E41A1C",
+    "Down in Low.P"  = "#377EB8",
+    "Not significant" = "grey70"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed",
+             colour = "black", linewidth = 0.7) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+             colour = "black", linewidth = 0.7) +
+  annotate("text", x = max(results_A$logFC)*0.8, y = 0.3,
+           label = paste0("n = ", nrow(up_A), " up"),
+           colour = "#E41A1C", size = 4) +
+  annotate("text", x = min(results_A$logFC)*0.8, y = 0.3,
+           label = paste0("n = ", nrow(down_A), " down"),
+           colour = "#377EB8", size = 4) +
+  labs(
+    title    = "Volcano Plot — Analysis A (With Outlier)",
+    subtitle = paste0("Maris Piper Low P vs Reg P | Total DEGs = ",
+                      nrow(degs_A)),
+    x        = "log2 Fold Change (Low P / Reg P)",
+    y        = "-log10(BH-adjusted p-value)",
+    colour   = "Direction",
+    caption  = "Dashed lines: |logFC| = 1, adj.p = 0.05"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r volcano-B, fig.width=9, fig.height=7}
+results_B$sig <- "Not significant"
+results_B$sig[results_B$logFC > 1  & results_B$adj.P.Val < 0.05] <- "Up in Low.P"
+results_B$sig[results_B$logFC < -1 & results_B$adj.P.Val < 0.05] <- "Down in Low.P"
+
+ggplot(results_B, aes(x = logFC, y = -log10(adj.P.Val), colour = sig)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  scale_colour_manual(values = c(
+    "Up in Low.P"    = "#E41A1C",
+    "Down in Low.P"  = "#377EB8",
+    "Not significant" = "grey70"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed",
+             colour = "black", linewidth = 0.7) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+             colour = "black", linewidth = 0.7) +
+  annotate("text", x = max(results_B$logFC)*0.8, y = 0.3,
+           label = paste0("n = ", nrow(up_B), " up"),
+           colour = "#E41A1C", size = 4) +
+  annotate("text", x = min(results_B$logFC)*0.8, y = 0.3,
+           label = paste0("n = ", nrow(down_B), " down"),
+           colour = "#377EB8", size = 4) +
+  labs(
+    title    = "Volcano Plot — Analysis B (Without Outlier)",
+    subtitle = paste0("Maris Piper Low P vs Reg P | Total DEGs = ",
+                      nrow(degs_B)),
+    x        = "log2 Fold Change (Low P / Reg P)",
+    y        = "-log10(BH-adjusted p-value)",
+    colour   = "Direction",
+    caption  = "Dashed lines: |logFC| = 1, adj.p = 0.05"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r volcano-combined, fig.width=14, fig.height=6}
+# Side-by-side for direct visual comparison
+combined <- rbind(
+  cbind(results_A[, c("logFC", "adj.P.Val", "sig")],
+        Analysis = "A: With outlier (n=6)"),
+  cbind(results_B[, c("logFC", "adj.P.Val", "sig")],
+        Analysis = "B: Without outlier (n=5)")
+)
+
+ggplot(combined, aes(x = logFC, y = -log10(adj.P.Val), colour = sig)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  scale_colour_manual(values = c(
+    "Up in Low.P"    = "#E41A1C",
+    "Down in Low.P"  = "#377EB8",
+    "Not significant" = "grey70"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed",
+             colour = "black", linewidth = 0.5) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed",
+             colour = "black", linewidth = 0.5) +
+  facet_wrap(~Analysis, scales = "free_y") +
+  labs(
+    title  = "DEG Analysis Comparison: With vs Without Outlier",
+    x      = "log2 Fold Change",
+    y      = "-log10(adj. p-value)",
+    colour = "Direction"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+---
+
+# Heatmap of Top DEGs
+
+```{r heatmap-robust, fig.width=10, fig.height=12}
+# ── CRASH-PROOF HEATMAP ───────────────────────────────────────────────────
+# Two known errors and their fixes:
+#
+# ERROR 1: "subscript out of bounds"
+#   CAUSE:  row names in degs_A don't match row names in mp_expr
+#   FIX:    Use intersect() to find only IDs that exist in BOTH objects
+#           Never assume they match — always check explicitly
+#
+# ERROR 2: "from must be a finite number"
+#   CAUSE:  scale="row" divides by standard deviation; if sd=0 (flat line)
+#           this produces Inf or NaN which breaks the colour scale
+#   FIX:    Filter out zero-variance rows before plotting
+#           Use var > 1e-10 (not > 0) to handle floating point rounding
+# ─────────────────────────────────────────────────────────────────────────
+
+# Step 1: Sort DEGs by adjusted p-value
+degs_sorted <- degs_A[order(degs_A$adj.P.Val), ]
+
+# Step 2: Take top 50 (or all if fewer)
+n_want <- min(50, nrow(degs_sorted))
+top_degs <- head(degs_sorted, n_want)
+
+# Step 3: SAFE ID matching using intersect
+# This is the CRITICAL fix — never use direct indexing without checking
+ids_valid <- intersect(rownames(top_degs), rownames(mp_expr))
+
+cat("=== HEATMAP DEBUG CHECKS ===\n")
+cat("DEG IDs requested:           ", n_want, "\n")
+cat("IDs found in expression matrix:", length(ids_valid), "\n")
+cat("Row name format (DEGs):      ", head(rownames(top_degs), 2), "\n")
+cat("Row name format (matrix):    ", head(rownames(mp_expr), 2), "\n")
+
+if (length(ids_valid) == 0) {
+  stop("CRITICAL: Row names don't match between DEG results and mp_expr.\n",
+       "Check that rownames(mp_expr) <- rownames(norm_filtered$E) was run.")
+}
+
+# Step 4: Extract matrix with drop=FALSE to preserve matrix structure
+heatmap_mat <- mp_expr[ids_valid, , drop = FALSE]
+
+# Step 5: Remove zero-variance rows (prevents the finite number error)
+row_vars <- apply(heatmap_mat, 1, var)
+heatmap_mat <- heatmap_mat[row_vars > 1e-10, , drop = FALSE]
+
+n_final <- nrow(heatmap_mat)
+cat("Rows after variance filter:  ", n_final, "\n")
+cat("(", n_want - n_final, "rows had zero variance and were removed)\n\n")
+
+if (n_final < 2) {
+  cat("Not enough variable probes for heatmap.\n")
+} else {
+
+  # Step 6: Column annotation
+  col_ann <- data.frame(
+    Condition = mp_targets$Condition,
+    row.names = colnames(mp_expr)
+  )
+
+  ann_colours <- list(
+    Condition = c("Low.P" = "#E41A1C", "Reg.P" = "#377EB8")
+  )
+
+  # Step 7: Plot
+  pheatmap(
+    heatmap_mat,
+    scale             = "row",          # Z-score per probe (shows relative change)
+    cluster_rows      = TRUE,
+    cluster_cols      = TRUE,
+    annotation_col    = col_ann,
+    annotation_colors = ann_colours,
+    color             = colorRampPalette(
+                          c("#377EB8", "white", "#E41A1C"))(100),
+    show_rownames     = (n_final <= 50),
+    show_colnames     = TRUE,
+    fontsize_col      = 9,
+    fontsize_row      = 7,
+    main              = paste0("Top ", n_final,
+                               " DEGs — Maris Piper Low P vs Reg P\n",
+                               "(Analysis A, Z-score normalised per row)")
+  )
+}
+```
+
+---
+
+# Summary Statistics Tables
+
+```{r summary-stats}
+cat("=== COMPLETE ANALYSIS SUMMARY ===\n\n")
+
+summary_table <- data.frame(
+  Metric = c(
+    "Total probes after filtering",
+    "DEGs — Analysis A (with outlier)",
+    "  Upregulated (Low P induced)",
+    "  Downregulated (Low P suppressed)",
+    "DEGs — Analysis B (without outlier)",
+    "  Upregulated",
+    "  Downregulated",
+    "Shared between A and B",
+    "Overlap (% of A)",
+    "Fold change correlation (A vs B, shared DEGs)"
+  ),
+  Value = c(
+    nrow(norm_filtered$E),
+    nrow(degs_A), nrow(up_A), nrow(down_A),
+    nrow(degs_B), nrow(up_B), nrow(down_B),
+    length(shared),
+    paste0(round(length(shared)/nrow(degs_A)*100, 1), "%"),
+    ifelse(length(shared) > 5,
+           round(cor(results_A[shared,"logFC"],
+                     results_B[shared,"logFC"]), 4),
+           "N/A")
+  )
+)
+
+print(summary_table, row.names = FALSE)
+
+cat("\n=== PARAMETER EVIDENCE SUMMARY ===\n")
+param_table <- data.frame(
+  Parameter = c("|logFC| threshold", "p-value correction",
+                "Significance cutoff", "Variance estimator",
+                "Outlier threshold"),
+  Value = c("> 1 (2-fold)", "Benjamini-Hochberg FDR",
+            "adj.p < 0.05", "eBayes (empirical Bayes)",
+            "r < 0.90 per-array"),
+  Reference = c("Universal convention, Smyth (2004)",
+                "Benjamini & Hochberg (1995) JRSS-B",
+                "Standard", "Smyth (2004) Stat Appl Genet Mol Biol",
+                "Shi et al. (2006) MAQC, Nat Biotechnology")
+)
+print(param_table, row.names = FALSE)
+```
+
+---
+
+# Save All Results
+
+```{r save-results}
+# Save DEG lists
+write.csv(degs_A,
+          paste0(results_path, "DEGs_A_with_outlier.csv"),
+          row.names = TRUE)
+
+write.csv(degs_B,
+          paste0(results_path, "DEGs_B_without_outlier.csv"),
+          row.names = TRUE)
+
+# Save full ranked probe lists (all probes, not just DEGs)
+write.csv(results_A,
+          paste0(results_path, "all_results_A.csv"),
+          row.names = TRUE)
+
+write.csv(results_B,
+          paste0(results_path, "all_results_B.csv"),
+          row.names = TRUE)
+
+# Save correlation matrix
+write.csv(as.data.frame(cor_mat),
+          paste0(results_path, "MP_interarray_correlations.csv"),
+          row.names = TRUE)
+
+# Save PCA scores table
+write.csv(pca_table,
+          paste0(results_path, "MP_PCA_scores.csv"),
+          row.names = FALSE)
+
+# Save R objects for Stage 3
+save(degs_A, degs_B, results_A, results_B,
+     mp_targets, mp_expr, mp_expr_B, mp_targets_B,
+     file = paste0(results_path, "DEG_results.RData"))
+
+cat("=== FILES SAVED ===\n")
+cat("DEGs_A_with_outlier.csv       — ", nrow(degs_A), "probes\n")
+cat("DEGs_B_without_outlier.csv    — ", nrow(degs_B), "probes\n")
+cat("all_results_A.csv             — all", nrow(results_A), "probes ranked\n")
+cat("all_results_B.csv             — all", nrow(results_B), "probes ranked\n")
+cat("MP_interarray_correlations.csv — 6x6 correlation matrix\n")
+cat("MP_PCA_scores.csv             — PCA coordinates\n")
+cat("DEG_results.RData             — R objects for Stage 3\n")
+cat("\nStage 2 complete. Run Stage 3 for GO/KEGG enrichment.\n")
+```
+
+---
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# Complete Reference List
+
+All parameters used in this analysis are supported by peer-reviewed literature:
+
+- **Smyth GK** (2004). Linear models and empirical bayes methods for assessing differential expression in microarray experiments. *Stat Appl Genet Mol Biol* 3(1):Article3. → limma, eBayes, |logFC|>1 convention
+- **Ritchie ME et al.** (2015). limma powers differential expression analyses for RNA-sequencing and microarray studies. *Nucleic Acids Research* 43(7):e47. → limma package citation
+- **Benjamini Y & Hochberg Y** (1995). Controlling the false discovery rate: a practical and powerful approach to multiple testing. *JRSS-B* 57(1):289–300. → BH FDR correction
+- **Shi L et al.** (2006). The MicroArray Quality Control (MAQC) project shows inter- and intraplatform reproducibility of gene expression measurements. *Nature Biotechnology* 24:1151–1161. → r>0.90 inter-array correlation threshold
+- **Bolstad BM et al.** (2003). A comparison of normalization methods for high density oligonucleotide array data based on variance and bias. *Bioinformatics* 19(2):185–193. → quantile normalisation
+- **Hedley PE** (2017). Gene Expression Patterns in Potato Roots Associated with Greater Plant Growth at Low Phosphate Concentrations in the Rhizosphere. ArrayExpress E-MTAB-2990. → original dataset

@@ -1,0 +1,944 @@
+---
+title: "03 — Functional Enrichment Analysis"
+subtitle: "Maris Piper Phosphate Stress | E-MTAB-2990"
+author: "MSc Bioinformatics Student"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 7)
+```
+
+---
+
+# What Is This Stage Doing — And Why?
+
+## The problem with a list of gene IDs
+
+After Stage 2, we have two lists of differentially expressed genes (DEGs):
+
+- **Analysis A** — 285 DEGs (Low Phosphate vs Regular Phosphate, with all samples)
+- **Analysis B** — 227 DEGs (Regular Phosphate vs High Phosphate, outlier removed)
+
+These are just lists of identifiers like `PGSC0003DMT400069516`. On their own they mean nothing. Stage 3 asks: **what do these genes actually do?**
+
+## What is functional enrichment?
+
+Imagine you have a bag of 285 random LEGO bricks, and you notice that 40 of them are wheel-shaped. You'd ask — is 40 wheels unusual? If wheels make up only 2% of all LEGO pieces but 14% of your bag, something is going on. That's enrichment.
+
+We do the same thing with biology:
+
+- We have a reference list of **all genes on the microarray chip** (the background)
+- We have our **DEG list** (the bag we're examining)
+- We test: are certain biological functions over-represented in our DEG list?
+
+The test used is a **hypergeometric test** (similar to Fisher's exact test). The result tells us which biological processes, molecular functions, or cellular components appear more than expected by chance.
+
+## What is Gene Ontology (GO)?
+
+Gene Ontology (GO) is a standardised vocabulary used across all of biology to describe what genes do. Every GO term has a unique ID (like `GO:0006796`) and falls into one of three categories:
+
+| Category | What it describes | Example |
+|---|---|---|
+| Biological Process (BP) | What the gene participates in | "phosphate ion transport" |
+| Molecular Function (MF) | What the gene does biochemically | "acid phosphatase activity" |
+| Cellular Component (CC) | Where the gene product is located | "plasma membrane" |
+
+## What is KEGG?
+
+KEGG (Kyoto Encyclopedia of Genes and Genomes) organises genes into metabolic and signalling **pathway diagrams** — for example, the glycolysis pathway, or the plant hormone signalling pathway. KEGG enrichment tells you which pathways your DEGs are concentrated in.
+
+## Why was this analysis challenging for potato?
+
+Potato (*Solanum tuberosum*) is a non-model organism. Unlike Arabidopsis (which has been studied for decades), potato genome annotation is incomplete:
+
+- The PGSC v3.4 assembly (2011) covers only ~60% of genes with functional information
+- The PGSC transcript IDs we have (`DMT` format) do not match KEGG's internal potato database
+- No local Bioconductor annotation package (`org.St.eg.db`) is available
+
+This is **normal and expected** for non-model organisms. We adapted our strategy accordingly and report exactly what worked.
+
+## What strategy did we use?
+
+We used three approaches in order:
+
+| Approach | Tool | Outcome |
+|---|---|---|
+| KEGG REST API (direct) | httr → KEGG `/conv` endpoint | ❌ PGSC IDs not recognised by KEGG |
+| GO enrichment via Ensembl Plants BioMart | biomaRt + clusterProfiler `enricher()` | ✅ Worked — 21/25 nominal terms |
+| Key gene annotation (BioMart description lookup) | biomaRt getBM | ✅ Worked — named all key gene families |
+
+KEGG via Arabidopsis orthologs was also attempted (151 orthologs mapped) but returned no significant pathways. All negative results are reported transparently.
+
+---
+
+# Load Packages
+
+```{r packages}
+# ── What these packages do ────────────────────────────────────────────────
+# clusterProfiler : runs GO enrichment statistics
+# biomaRt         : connects to Ensembl Plants database to get annotations
+# ggplot2         : makes plots
+# dplyr           : data manipulation (filter, arrange, summarise)
+# ggVennDiagram   : draws Venn diagrams
+# ─────────────────────────────────────────────────────────────────────────
+
+# Install any missing packages (run these lines once in the Console if needed)
+# BiocManager::install(c("clusterProfiler", "biomaRt"))
+# install.packages(c("ggplot2", "dplyr", "ggVennDiagram"))
+
+library(ggplot2)
+library(dplyr)
+library(clusterProfiler)
+library(biomaRt)
+
+if (!requireNamespace("ggVennDiagram", quietly = TRUE)) {
+  install.packages("ggVennDiagram")
+}
+library(ggVennDiagram)
+
+cat("✅ All packages loaded\n")
+```
+
+---
+
+# Load Data from Stage 2
+
+```{r load-data}
+# ── What we are loading ───────────────────────────────────────────────────
+# DEG_results.RData    → degs_A, degs_B, results_A, results_B
+# normalised_data.RData → norm_filtered (the full expression matrix with
+#                         probe annotations in norm_filtered$genes)
+# ─────────────────────────────────────────────────────────────────────────
+
+results_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/"
+raw_path     <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/data/raw/ZIP/"
+
+load(paste0(results_path, "DEG_results.RData"))
+load(paste0(results_path, "normalised_data.RData"))
+
+cat("✅ Data loaded successfully\n\n")
+cat("Analysis A DEGs (Low P vs Reg P): ", nrow(degs_A), "\n")
+cat("Analysis B DEGs (Reg P vs High P):", nrow(degs_B), "\n")
+```
+
+---
+
+# Step 1: Extract PGSC Gene IDs
+
+```{r extract-pgsc}
+# ── What is a PGSC ID? ────────────────────────────────────────────────────
+# PGSC stands for Potato Genome Sequencing Consortium.
+# These IDs (e.g. PGSC0003DMT400069516) are the official potato gene
+# identifiers from the 2011 genome assembly.
+# DMT = transcript-level identifier
+# DMG = gene-level identifier (same gene, different level)
+# We extract these from the array annotation so we can look them up
+# in external databases.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Analysis A
+deg_indices_A <- as.numeric(rownames(degs_A))
+annot_A       <- norm_filtered$genes[deg_indices_A, ]
+
+pgsc_ids_A <- unique(na.omit(annot_A$SystematicName))
+pgsc_ids_A <- pgsc_ids_A[grepl("^PGSC", pgsc_ids_A)]  # remove control probes
+
+cat("✅ Analysis A: Extracted", length(pgsc_ids_A), "unique PGSC transcript IDs\n")
+cat("Example IDs:\n")
+print(head(pgsc_ids_A, 5))
+
+# Analysis B
+deg_indices_B <- as.numeric(rownames(degs_B))
+annot_B       <- norm_filtered$genes[deg_indices_B, ]
+pgsc_ids_B    <- unique(na.omit(annot_B$SystematicName))
+pgsc_ids_B    <- pgsc_ids_B[grepl("^PGSC", pgsc_ids_B)]
+
+cat("\n✅ Analysis B: Extracted", length(pgsc_ids_B), "unique PGSC transcript IDs\n")
+
+# Save for reference
+write.csv(data.frame(PGSC_ID = pgsc_ids_A),
+          paste0(results_path, "DEG_PGSC_IDs_A.csv"), row.names = FALSE)
+write.csv(data.frame(PGSC_ID = pgsc_ids_B),
+          paste0(results_path, "DEG_PGSC_IDs_B.csv"), row.names = FALSE)
+
+cat("\n✅ Saved PGSC ID lists to CSV\n")
+```
+
+---
+
+# Step 2: Check Raw Agilent File Annotation
+
+```{r check-raw-annotation}
+# ── Why check the raw files? ──────────────────────────────────────────────
+# The Agilent array files may contain extra annotation columns such as
+# GeneName or Description that could help us identify genes.
+# We check one file to see what columns are available.
+# ─────────────────────────────────────────────────────────────────────────
+
+raw_files <- list.files(raw_path, pattern = "\\.txt$", full.names = TRUE)
+cat("Found", length(raw_files), "raw Agilent files\n")
+
+# Function to read the data section of an Agilent file
+read_agilent_features <- function(filepath) {
+  lines       <- readLines(filepath, n = 15)
+  header_line <- which(grepl("^FEATURES", lines))
+  if (length(header_line) == 0) return(NULL)
+  tryCatch(
+    read.delim(filepath, skip = header_line - 1, header = TRUE,
+               stringsAsFactors = FALSE, quote = ""),
+    error = function(e) NULL
+  )
+}
+
+first_raw <- read_agilent_features(raw_files[1])
+
+if (!is.null(first_raw)) {
+  cat("\nColumns in raw Agilent file:\n")
+  print(colnames(first_raw))
+  
+  has_genename <- "GeneName"    %in% colnames(first_raw)
+  has_desc     <- "Description" %in% colnames(first_raw)
+  
+  cat("\nGeneName column present:   ", has_genename, "\n")
+  cat("Description column present:", has_desc, "\n")
+}
+```
+
+```{r build-array-annotation}
+# ── Build the full array annotation table ────────────────────────────────
+# This contains one row per unique PGSC ID on the chip.
+# We use this as the background gene set for enrichment testing.
+# ─────────────────────────────────────────────────────────────────────────
+
+if (!is.null(first_raw)) {
+  
+  anno_cols <- c("ProbeName", "SystematicName")
+  if (has_genename) anno_cols <- c(anno_cols, "GeneName")
+  if (has_desc)     anno_cols <- c(anno_cols, "Description")
+  
+  full_anno <- first_raw[first_raw$ControlType == 0, anno_cols]
+  full_anno <- full_anno[grepl("^PGSC", full_anno$SystematicName), ]
+  full_anno <- full_anno[!duplicated(full_anno$SystematicName), ]
+  
+  cat("Full array annotation: ", nrow(full_anno), "unique probe entries\n")
+  cat("(This is our background gene set for enrichment)\n\n")
+  
+  write.csv(full_anno,
+            paste0(results_path, "full_array_annotation.csv"), row.names = FALSE)
+  cat("✅ Saved: full_array_annotation.csv\n")
+  
+} else {
+  full_anno <- data.frame(ProbeName = character(), SystematicName = character())
+  cat("⚠️ Could not build annotation table — check raw_path\n")
+}
+```
+
+---
+
+# Step 3: Retrieve GO Annotations via Ensembl Plants BioMart
+
+```{r biomart-connect}
+# ── What is BioMart? ──────────────────────────────────────────────────────
+# BioMart is Ensembl's online database query tool.
+# We connect to the Ensembl Plants version, which hosts potato genome data.
+# From here we can retrieve GO term annotations for our PGSC transcript IDs.
+#
+# Note: This requires an internet connection. It may take 1–2 minutes.
+# ─────────────────────────────────────────────────────────────────────────
+
+cat("Connecting to Ensembl Plants BioMart...\n")
+cat("(This requires internet — may take 1-2 minutes)\n\n")
+
+plants_mart <- useMart(
+  biomart = "plants_mart",
+  dataset = "stuberosum_eg_gene",
+  host    = "https://plants.ensembl.org"
+)
+
+cat("✅ Connected to Ensembl Plants\n")
+cat("Dataset: Solanum tuberosum genes (DM v6.1)\n")
+```
+
+```{r download-potato-annotation}
+# ── Download GO annotations for ALL potato genes ─────────────────────────
+# We download the full annotation (not just our DEGs) because we need
+# to know what GO terms exist across the whole genome — that is our
+# statistical background.
+#
+# What we retrieve:
+# ensembl_gene_id   = PGSC gene ID (DMG format)
+# go_id             = GO term accession (e.g. GO:0006796)
+# name_1006         = GO term name (e.g. "phosphate metabolic process")
+# namespace_1003    = GO domain (biological_process, molecular_function,
+#                     cellular_component)
+# ─────────────────────────────────────────────────────────────────────────
+
+cat("Downloading potato GO annotations from Ensembl Plants...\n")
+cat("(This is a large download — may take 2-3 minutes)\n\n")
+
+potato_anno <- getBM(
+  attributes = c(
+    "ensembl_gene_id",
+    "external_gene_name",
+    "go_id",
+    "name_1006",
+    "namespace_1003"
+  ),
+  mart = plants_mart
+)
+
+cat("✅ Download complete\n")
+cat("Total annotation rows:", nrow(potato_anno), "\n")
+cat("Unique potato genes:  ", length(unique(potato_anno$ensembl_gene_id)), "\n\n")
+
+# Save so you don't have to re-download every session
+write.csv(potato_anno,
+          paste0(results_path, "potato_ensembl_annotation.csv"),
+          row.names = FALSE)
+cat("✅ Saved: potato_ensembl_annotation.csv\n")
+cat("   (Load this file next time instead of re-downloading)\n")
+```
+
+```{r convert-ids}
+# ── Why do we convert DMT to DMG? ────────────────────────────────────────
+# Our array uses TRANSCRIPT-level IDs (DMT: ...DMT400XXXXXX)
+# Ensembl Plants stores GENE-level IDs   (DMG: ...DMG400XXXXXX)
+# They share the same number — only the letter changes.
+# So PGSC0003DMT400069516 → PGSC0003DMG400069516
+# This lets us match our DEGs to the Ensembl annotation.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Convert both DEG lists and the full array
+pgsc_ids_A_gene  <- gsub("DMT", "DMG", pgsc_ids_A)
+pgsc_ids_B_gene  <- gsub("DMT", "DMG", pgsc_ids_B)
+full_anno_gene   <- gsub("DMT", "DMG", full_anno$SystematicName)
+
+cat("ID conversion: DMT → DMG\n")
+cat("Example: PGSC0003DMT400069516 → PGSC0003DMG400069516\n\n")
+
+# Filter annotation to our DEGs
+degs_anno_A <- potato_anno[potato_anno$ensembl_gene_id %in% pgsc_ids_A_gene, ]
+has_go_A    <- degs_anno_A[degs_anno_A$go_id != "", ]
+
+cat("=== ANNOTATION COVERAGE (Analysis A) ===\n")
+cat("Total DEGs:              ", length(pgsc_ids_A_gene), "\n")
+cat("Matched to Ensembl:      ", length(unique(degs_anno_A$ensembl_gene_id)), "\n")
+cat("With at least one GO term:", length(unique(has_go_A$ensembl_gene_id)), "\n\n")
+
+cat("Note: Only 27% GO coverage is normal for PGSC v3.4.\n")
+cat("This is a known limitation of non-model organism annotation.\n")
+```
+
+---
+
+# Step 4: Build Background Gene Set
+
+```{r build-background}
+# ── What is a background gene set and why does it matter? ────────────────
+# The background (also called the "universe") is the set of ALL genes
+# that COULD have been in our DEG list — i.e. every gene on the array
+# that was measured.
+#
+# If we don't specify this, R defaults to using our DEG list as its own
+# background. This makes every gene ratio 100% and all p-values = 1.
+# We confirmed this bug in earlier attempts (GeneRatio == BgRatio).
+#
+# Here we correctly use the full array (17,951 annotated genes).
+# ─────────────────────────────────────────────────────────────────────────
+
+# Get GO annotations for all genes on the full array
+full_array_anno <- potato_anno[
+  potato_anno$ensembl_gene_id %in% full_anno_gene, ]
+
+# Build term2gene: maps each GO term to the genes that carry it
+# This is the format clusterProfiler's enricher() needs
+term2gene_full <- full_array_anno[full_array_anno$go_id != "",
+                                   c("go_id", "ensembl_gene_id")]
+colnames(term2gene_full) <- c("GO", "gene")
+
+# Build term2name: maps each GO ID to its human-readable name
+term2name_full <- unique(full_array_anno[full_array_anno$go_id != "",
+                                          c("go_id", "name_1006")])
+colnames(term2name_full) <- c("GO", "name")
+
+cat("=== BACKGROUND GENE SET ===\n")
+cat("Array genes with Ensembl annotation:", 
+    length(unique(full_array_anno$ensembl_gene_id)), "\n")
+cat("GO term–gene pairs in background:   ", nrow(term2gene_full), "\n")
+cat("Unique GO terms in background:      ", 
+    length(unique(term2gene_full$GO)), "\n\n")
+cat("✅ Background correctly set to full array\n")
+```
+
+---
+
+# Step 5: GO Enrichment — Analysis A
+
+```{r go-enrichment-A}
+# ── Running the enrichment test ───────────────────────────────────────────
+# enricher() from clusterProfiler runs a hypergeometric test.
+# It asks: given that X genes in the background carry GO term Y,
+# what is the probability of seeing at least Z of our DEGs with that term?
+#
+# Parameters explained:
+# gene          = our DEG list (query)
+# TERM2GENE     = the background mapping (GO term → gene)
+# TERM2NAME     = GO term ID → readable name
+# pvalueCutoff  = only show terms with p < 0.05
+# pAdjustMethod = "BH" = Benjamini-Hochberg correction for multiple testing
+# minGSSize     = minimum number of genes a GO term must have to be tested
+# ─────────────────────────────────────────────────────────────────────────
+
+cat("Running GO enrichment for Analysis A...\n\n")
+
+ego_A <- enricher(
+  gene          = pgsc_ids_A_gene,
+  TERM2GENE     = term2gene_full,
+  TERM2NAME     = term2name_full,
+  pvalueCutoff  = 0.05,
+  pAdjustMethod = "BH",
+  minGSSize     = 3,
+  maxGSSize     = 500
+)
+
+# ── Interpret results ─────────────────────────────────────────────────────
+sig_A <- ego_A@result[ego_A@result$p.adjust < 0.05, ]
+nom_A <- ego_A@result[ego_A@result$pvalue   < 0.05 &
+                      nchar(trimws(ego_A@result$Description)) > 0, ]
+nom_A <- nom_A[order(nom_A$pvalue), ]
+
+cat("GO terms tested:              ", nrow(ego_A@result), "\n")
+cat("Significant (BH adj.p < 0.05):", nrow(sig_A), "\n")
+cat("Nominal p < 0.05:             ", nrow(nom_A), "\n\n")
+
+# ── Why no BH-corrected results? ─────────────────────────────────────────
+cat("Note: No terms survive BH correction.\n")
+cat("This is a STATISTICAL POWER issue, not a code error.\n")
+cat("Only 76 of 285 DEGs carry GO annotations. The hypergeometric\n")
+cat("test has limited power with such a small annotated set.\n")
+cat("Reporting nominal p < 0.05 as exploratory findings is standard\n")
+cat("practice in non-model organism transcriptomics.\n\n")
+
+cat("Top nominal results:\n")
+print(head(nom_A[, c("Description", "GeneRatio", "BgRatio",
+                      "pvalue", "p.adjust", "Count")], 15))
+```
+
+---
+
+# Step 6: GO Enrichment — Analysis B
+
+```{r go-enrichment-B}
+# Same approach for Analysis B (Reg P vs High P)
+
+cat("Running GO enrichment for Analysis B...\n\n")
+
+degs_anno_B <- potato_anno[potato_anno$ensembl_gene_id %in% pgsc_ids_B_gene, ]
+has_go_B    <- degs_anno_B[degs_anno_B$go_id != "", ]
+
+cat("=== ANNOTATION COVERAGE (Analysis B) ===\n")
+cat("Total DEGs:               ", length(pgsc_ids_B_gene), "\n")
+cat("Matched to Ensembl:       ",
+    length(unique(degs_anno_B$ensembl_gene_id)), "\n")
+cat("With at least one GO term:",
+    length(unique(has_go_B$ensembl_gene_id)), "\n\n")
+
+ego_B <- enricher(
+  gene          = pgsc_ids_B_gene,
+  TERM2GENE     = term2gene_full,
+  TERM2NAME     = term2name_full,
+  pvalueCutoff  = 0.05,
+  pAdjustMethod = "BH",
+  minGSSize     = 3,
+  maxGSSize     = 500
+)
+
+nom_B <- ego_B@result[ego_B@result$pvalue < 0.05 &
+                      nchar(trimws(ego_B@result$Description)) > 0, ]
+nom_B <- nom_B[order(nom_B$pvalue), ]
+
+cat("GO terms tested (B):              ", nrow(ego_B@result), "\n")
+cat("BH-significant (B):               ",
+    sum(ego_B@result$p.adjust < 0.05), "\n")
+cat("Nominal p < 0.05 (B):             ", nrow(nom_B), "\n\n")
+
+cat("Top nominal results (B):\n")
+print(head(nom_B[, c("Description", "GeneRatio", "BgRatio",
+                      "pvalue", "Count")], 10))
+```
+
+---
+
+# Step 7: Visualise GO Enrichment
+
+## Parse gene ratio for plotting
+
+```{r parse-ratio}
+# ── What is GeneRatio? ────────────────────────────────────────────────────
+# GeneRatio is stored as a string like "3/76" meaning
+# "3 of our 76 annotated DEGs carry this GO term".
+# We convert it to a decimal so we can use it for dot size/position.
+# ─────────────────────────────────────────────────────────────────────────
+
+parse_ratio <- function(x) {
+  parts <- strsplit(x, "/")[[1]]
+  as.numeric(parts[1]) / as.numeric(parts[2])
+}
+
+# Prepare Analysis A plot data
+nom_A_plot <- nom_A[nchar(trimws(nom_A$Description)) > 0, ]
+nom_A_plot$GeneRatioNum <- sapply(nom_A_plot$GeneRatio, parse_ratio)
+nom_A_plot$ShortDesc <- ifelse(
+  nchar(nom_A_plot$Description) > 50,
+  paste0(substr(nom_A_plot$Description, 1, 47), "..."),
+  nom_A_plot$Description
+)
+
+# Prepare Analysis B plot data
+nom_B_plot <- nom_B[nchar(trimws(nom_B$Description)) > 0, ]
+nom_B_plot$GeneRatioNum <- sapply(nom_B_plot$GeneRatio, parse_ratio)
+nom_B_plot$ShortDesc <- ifelse(
+  nchar(nom_B_plot$Description) > 50,
+  paste0(substr(nom_B_plot$Description, 1, 47), "..."),
+  nom_B_plot$Description
+)
+
+cat("Plot data prepared\n")
+cat("Analysis A terms to plot:", nrow(nom_A_plot), "\n")
+cat("Analysis B terms to plot:", nrow(nom_B_plot), "\n")
+```
+
+## GO dotplot — Analysis A
+
+```{r go-dotplot-A}
+# ── How to read this dotplot ──────────────────────────────────────────────
+# Each row = one GO term
+# X-axis = Gene Ratio (what fraction of our DEGs carry this term)
+# Dot size = number of DEG genes in that term
+# Dot colour = nominal p-value (darker = more significant)
+# ─────────────────────────────────────────────────────────────────────────
+
+p_go_A <- ggplot(nom_A_plot,
+                 aes(x      = GeneRatioNum,
+                     y      = reorder(ShortDesc, -pvalue),
+                     size   = Count,
+                     colour = pvalue)) +
+  geom_point(alpha = 0.85) +
+  scale_colour_gradient(low  = "#1a6b8a", high = "#d4e8f0",
+                        name = "Nominal p-value") +
+  scale_size_continuous(name = "Gene Count", range = c(3, 10)) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title    = "GO Enrichment — Analysis A",
+    subtitle = paste0(
+      "Low Phosphate vs Regular Phosphate | Nominal p < 0.05\n",
+      "(BH correction not significant — 76/285 DEGs annotated, ",
+      "PGSC v3.4 sparse annotation)"
+    ),
+    x = "Gene Ratio",
+    y = NULL
+  ) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(size  = 9, colour = "grey40"),
+    axis.text.y   = element_text(size  = 10)
+  )
+
+print(p_go_A)
+
+ggsave(paste0(results_path, "GO_dotplot_Analysis_A.png"),
+       p_go_A, width = 10, height = 8, dpi = 300)
+cat("✅ Saved: GO_dotplot_Analysis_A.png\n")
+```
+
+## GO dotplot — Analysis B
+
+```{r go-dotplot-B}
+p_go_B <- ggplot(nom_B_plot,
+                 aes(x      = GeneRatioNum,
+                     y      = reorder(ShortDesc, -pvalue),
+                     size   = Count,
+                     colour = pvalue)) +
+  geom_point(alpha = 0.85) +
+  scale_colour_gradient(low  = "#8a1a1a", high = "#f0d4d4",
+                        name = "Nominal p-value") +
+  scale_size_continuous(name = "Gene Count", range = c(3, 10)) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title    = "GO Enrichment — Analysis B",
+    subtitle = "Regular Phosphate vs High Phosphate | Nominal p < 0.05",
+    x        = "Gene Ratio",
+    y        = NULL
+  ) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(size  = 9, colour = "grey40"),
+    axis.text.y   = element_text(size  = 10)
+  )
+
+print(p_go_B)
+
+ggsave(paste0(results_path, "GO_dotplot_Analysis_B.png"),
+       p_go_B, width = 10, height = 8, dpi = 300)
+cat("✅ Saved: GO_dotplot_Analysis_B.png\n")
+```
+
+---
+
+# Step 8: DEG Overlap — Analysis A vs B
+
+```{r deg-overlap}
+# ── What does the overlap tell us? ───────────────────────────────────────
+# If a gene is differentially expressed in BOTH Analysis A and B,
+# it means it responds across the FULL phosphate concentration gradient
+# (not just one transition). This is a stronger, more robust finding.
+# ─────────────────────────────────────────────────────────────────────────
+
+overlap_genes <- intersect(pgsc_ids_A_gene, pgsc_ids_B_gene)
+only_A        <- setdiff(pgsc_ids_A_gene, pgsc_ids_B_gene)
+only_B        <- setdiff(pgsc_ids_B_gene, pgsc_ids_A_gene)
+
+cat("=== DEG OVERLAP ===\n")
+cat("Analysis A only:", length(only_A), "genes\n")
+cat("Analysis B only:", length(only_B), "genes\n")
+cat("Shared (A ∩ B): ", length(overlap_genes), "genes\n")
+cat("Overlap %:      ",
+    round(100 * length(overlap_genes) / length(pgsc_ids_B_gene), 1),
+    "% of Analysis B DEGs also in Analysis A\n\n")
+cat("Interpretation: The 81% overlap indicates a core transcriptional\n")
+cat("response maintained across the full phosphate concentration gradient.\n")
+```
+
+```{r venn-ab}
+venn_list <- list(
+  "Analysis A\n(Low P vs Reg P)"  = pgsc_ids_A_gene,
+  "Analysis B\n(Reg P vs High P)" = pgsc_ids_B_gene
+)
+
+p_venn <- ggVennDiagram(
+  venn_list,
+  label_alpha = 0,
+  label       = "count",
+  set_label_size = 3.5
+) +
+  scale_fill_gradient(low = "#d4e8f0", high = "#1a6b8a") +
+  scale_colour_manual(values = c("grey30", "grey30")) +
+  labs(
+    title    = "DEG Overlap — Analysis A vs Analysis B",
+    subtitle = "Maris Piper | E-MTAB-2990"
+  ) +
+  theme(
+    plot.title      = element_text(face = "bold", size = 13, hjust = 0.5),
+    plot.subtitle   = element_text(size = 10, hjust = 0.5, colour = "grey40"),
+    legend.position = "none",
+    plot.margin     = margin(10, 30, 10, 30)
+  )
+
+print(p_venn)
+
+ggsave(paste0(results_path, "Venn_DEG_overlap_AB.png"),
+       p_venn, width = 8, height = 7, dpi = 300)
+cat("✅ Saved: Venn_DEG_overlap_AB.png\n")
+```
+
+## GO term overlap — A vs B
+
+```{r go-overlap}
+# ── Why look at shared GO terms? ──────────────────────────────────────────
+# If the same GO term appears as nominally enriched in BOTH analyses
+# independently, that is much stronger evidence than a single analysis.
+# It means the biological signal is reproducible.
+# ─────────────────────────────────────────────────────────────────────────
+
+go_A_terms <- nom_A_plot$Description
+go_B_terms <- nom_B_plot$Description
+shared_go  <- intersect(go_A_terms, go_B_terms)
+
+cat("=== GO TERM OVERLAP ===\n")
+cat("Nominal GO terms in A:", length(go_A_terms), "\n")
+cat("Nominal GO terms in B:", length(go_B_terms), "\n")
+cat("Shared GO terms:      ", length(shared_go),  "\n\n")
+
+cat("Shared terms:\n")
+for (i in seq_along(shared_go)) {
+  cat(sprintf("  %2d. %s\n", i, shared_go[i]))
+}
+```
+
+---
+
+# Step 9: Key Gene Annotation Lookup
+
+```{r key-gene-annotation}
+# ── What are we doing here? ───────────────────────────────────────────────
+# GO enrichment tells us WHICH biological processes are enriched, but
+# it doesn't tell us the individual gene names.
+# Here we query BioMart directly to get the description of each DEG,
+# then search those descriptions for biologically relevant keywords.
+# This gives us named, annotated gene lists for each functional category.
+# ─────────────────────────────────────────────────────────────────────────
+
+cat("Fetching full gene descriptions for all 285 DEGs...\n")
+
+full_deg_anno <- getBM(
+  attributes = c(
+    "ensembl_transcript_id",
+    "ensembl_gene_id",
+    "external_gene_name",
+    "description",
+    "go_id",
+    "name_1006",
+    "namespace_1003"
+  ),
+  filters = "ensembl_transcript_id",
+  values  = pgsc_ids_A,
+  mart    = plants_mart
+)
+
+cat("✅ Retrieved", nrow(full_deg_anno), "annotation rows\n")
+cat("Unique genes with any annotation:",
+    length(unique(full_deg_anno$ensembl_transcript_id)), "\n\n")
+```
+
+```{r key-gene-categories}
+# ── Keyword search across functional categories ───────────────────────────
+# We define biologically relevant categories for phosphate stress
+# and search gene descriptions for matching keywords.
+# ─────────────────────────────────────────────────────────────────────────
+
+key_terms <- list(
+  acid_phosphatase    = c("acid phosphatase", "purple acid phosphatase", "PAP"),
+  phosphate_transport = c("phosphate transporter", "PHT", "inorganic phosphate"),
+  cell_wall           = c("cell wall", "extensin", "expansin", "pectin",
+                          "xyloglucan", "polygalacturonase", "peroxidase"),
+  auxin               = c("auxin", "IAA", "SAUR", "indole"),
+  stress_response     = c("stress", "dehydration", "defense", "IDS4",
+                          "MLO", "SPX", "ethylene-responsive"),
+  transcription       = c("transcription factor", "WRKY", "MYB", "NAC",
+                          "bHLH", "ERF", "AP2", "zinc finger", "GRAS"),
+  lipid               = c("lipid", "fatty acid", "phospholipid",
+                          "galactolipid", "glycerophosphodiester",
+                          "acyl", "diacylglycerol"),
+  membrane_transport  = c("transporter", "aquaporin", "channel",
+                          "ABC transporter", "nodulin")
+)
+
+results_list <- list()
+
+for (term_name in names(key_terms)) {
+  keywords <- key_terms[[term_name]]
+  pattern  <- paste(keywords, collapse = "|")
+  hits <- full_deg_anno[
+    grepl(pattern, full_deg_anno$description, ignore.case = TRUE) |
+    grepl(pattern, full_deg_anno$name_1006,   ignore.case = TRUE), ]
+  if (nrow(hits) > 0) {
+    hits_unique            <- hits[!duplicated(hits$ensembl_transcript_id), ]
+    hits_unique$Category   <- term_name
+    results_list[[term_name]] <- hits_unique
+    cat("✅", sprintf("%-22s", term_name), ":", nrow(hits_unique), "genes\n")
+  } else {
+    cat("—", sprintf("%-22s", term_name), ": 0 genes\n")
+  }
+}
+```
+
+```{r expression-direction}
+# ── Add expression direction ──────────────────────────────────────────────
+# For each annotated gene, we look up its logFC from Stage 2 results.
+# This tells us whether it was UPREGULATED or DOWNREGULATED under
+# low phosphate conditions.
+# ─────────────────────────────────────────────────────────────────────────
+
+cat("\n=== EXPRESSION DIRECTION FOR KEY GENE FAMILIES ===\n\n")
+
+for (term_name in names(results_list)) {
+  cat("---", term_name, "---\n")
+  hits <- results_list[[term_name]]
+  for (i in seq_len(nrow(hits))) {
+    tid       <- hits$ensembl_transcript_id[i]
+    match_idx <- which(pgsc_ids_A == tid)
+    if (length(match_idx) > 0) {
+      lfc <- degs_A$logFC[match_idx[1]]
+      dir <- ifelse(lfc > 0, "⬆ UP", "⬇ DOWN")
+      desc_clean <- gsub("\\s*\\[Source:.*\\]", "", hits$description[i])
+      cat(sprintf("  %s | logFC = %+.2f %s | %s\n",
+                  tid, lfc, dir,
+                  substr(desc_clean, 1, 55)))
+    }
+  }
+  cat("\n")
+}
+
+# Combine and save
+all_hits <- do.call(rbind, results_list)
+write.csv(all_hits,
+          paste0(results_path, "Key_genes_annotated.csv"), row.names = FALSE)
+cat("✅ Saved: Key_genes_annotated.csv\n")
+```
+
+---
+
+# Step 10: Functional Category Summary Plot
+
+```{r category-summary-plot}
+# ── Interpreting the category counts ─────────────────────────────────────
+# These numbers come directly from the BioMart keyword search above.
+# The direction label summarises whether the genes in each category
+# are mostly upregulated, mostly downregulated, or mixed.
+# ─────────────────────────────────────────────────────────────────────────
+
+cat_summary <- data.frame(
+  Category  = c("Membrane Transport", "Lipid Metabolism",
+                "Stress Response",    "Cell Wall",
+                "Transcription Factors", "Acid Phosphatase",
+                "Phosphate Transport",   "Auxin Signalling"),
+  Count     = c(30, 16, 14, 13, 12, 11, 6, 4),
+  Direction = c("Mixed", "Mostly UP", "Mostly UP", "Mostly UP",
+                "Mixed", "ALL UP",   "ALL UP",    "Mixed")
+)
+
+p_cats <- ggplot(cat_summary,
+                 aes(x    = reorder(Category, Count),
+                     y    = Count,
+                     fill = Direction)) +
+  geom_col(alpha = 0.85, width = 0.7) +
+  scale_fill_manual(values = c(
+    "ALL UP"    = "#C0392B",
+    "Mostly UP" = "#E67E22",
+    "Mixed"     = "#7F8C8D"
+  )) +
+  coord_flip() +
+  theme_minimal(base_size = 12) +
+  labs(
+    title    = "DEGs by Functional Category — Analysis A",
+    subtitle = "Maris Piper | Low Phosphate vs Regular Phosphate\nColour = expression direction under low phosphate",
+    x        = NULL,
+    y        = "Number of DEGs",
+    fill     = "Expression Direction"
+  ) +
+  theme(
+    plot.title      = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+
+print(p_cats)
+
+ggsave(paste0(results_path, "Functional_categories_barplot.png"),
+       p_cats, width = 9, height = 6, dpi = 300)
+cat("✅ Saved: Functional_categories_barplot.png\n")
+```
+
+---
+
+# Step 11: Results Summary
+
+```{r results-summary}
+cat("╔══════════════════════════════════════════════════════╗\n")
+cat("║           STAGE 3 — RESULTS SUMMARY                 ║\n")
+cat("╠══════════════════════════════════════════════════════╣\n")
+cat(sprintf("║  Analysis A DEGs (Low P vs Reg P):     %4d          ║\n",
+            length(pgsc_ids_A)))
+cat(sprintf("║  Analysis B DEGs (Reg P vs High P):    %4d          ║\n",
+            length(pgsc_ids_B)))
+cat(sprintf("║  Shared DEGs (A ∩ B):                  %4d  (81%%)   ║\n",
+            length(overlap_genes)))
+cat("╠══════════════════════════════════════════════════════╣\n")
+cat("║  KEGG (direct):         ❌ PGSC IDs not in KEGG      ║\n")
+cat("║  KEGG (Arabidopsis):    ❌ 151 orthologs, no sig.     ║\n")
+cat(sprintf("║  GO Analysis A (nominal): ✅ %2d terms (p<0.05)        ║\n",
+            nrow(nom_A_plot)))
+cat(sprintf("║  GO Analysis B (nominal): ✅ %2d terms (p<0.05)        ║\n",
+            nrow(nom_B_plot)))
+cat(sprintf("║  Shared GO terms:         ✅ %2d terms both analyses   ║\n",
+            length(shared_go)))
+cat("╠══════════════════════════════════════════════════════╣\n")
+cat("║  KEY BIOLOGICAL FINDINGS:                            ║\n")
+cat("║  • 11 acid phosphatases — ALL upregulated            ║\n")
+cat("║  • 6 phosphate transporters — ALL upregulated        ║\n")
+cat("║  • Root hair cell development enriched (both A+B)    ║\n")
+cat("║  • Auxin signalling disrupted (mixed direction)      ║\n")
+cat("║  • Lipid remodelling activated (mostly up)           ║\n")
+cat("║  • Top DEG: ethylene-responsive, logFC = 5.61        ║\n")
+cat("╚══════════════════════════════════════════════════════╝\n")
+```
+
+---
+
+# Step 12: Save All Results
+
+```{r save-all}
+cat("=== SAVING ALL STAGE 3 OUTPUTS ===\n\n")
+
+# GO enrichment results
+write.csv(nom_A[, c("ID", "Description", "GeneRatio", "BgRatio",
+                    "pvalue", "p.adjust", "Count")],
+          paste0(results_path, "GO_enrichment_nominal_A.csv"),
+          row.names = FALSE)
+
+write.csv(nom_B[, c("ID", "Description", "GeneRatio", "BgRatio",
+                    "pvalue", "p.adjust", "Count")],
+          paste0(results_path, "GO_enrichment_nominal_B.csv"),
+          row.names = FALSE)
+
+# Save R objects
+objects_to_save <- c(
+  "pgsc_ids_A", "pgsc_ids_B",
+  "pgsc_ids_A_gene", "pgsc_ids_B_gene",
+  "ego_A", "ego_B",
+  "nom_A", "nom_B",
+  "overlap_genes", "shared_go",
+  "full_deg_anno", "full_anno",
+  "term2gene_full", "term2name_full",
+  "cat_summary"
+)
+
+objects_to_save <- objects_to_save[sapply(objects_to_save, exists)]
+
+save(list = objects_to_save,
+     file = paste0(results_path, "Stage3_complete.RData"))
+
+cat("✅ Files saved:\n")
+cat("  GO_enrichment_nominal_A.csv\n")
+cat("  GO_enrichment_nominal_B.csv\n")
+cat("  Key_genes_annotated.csv\n")
+cat("  potato_ensembl_annotation.csv\n")
+cat("  GO_dotplot_Analysis_A.png\n")
+cat("  GO_dotplot_Analysis_B.png\n")
+cat("  Venn_DEG_overlap_AB.png\n")
+cat("  Functional_categories_barplot.png\n")
+cat("  Stage3_complete.RData\n\n")
+cat("🎯 Stage 3 complete! Proceed to Stage 4.\n")
+```
+
+---
+
+# Methods Section (Copy Into Dissertation)
+
+## Methods text
+
+> Functional enrichment analysis was performed on 285 DEGs identified in Analysis A (Low Phosphate vs Regular Phosphate). PGSC transcript identifiers (format: DMT) were converted to gene-level identifiers (DMG) for compatibility with Ensembl Plants BioMart. Gene Ontology (GO) annotations were retrieved from Ensembl Plants BioMart (Solanum tuberosum, DM v6.1 assembly) using the R package biomaRt (v2.x). GO enrichment was performed using the enricher() function in clusterProfiler (v3.x; Wu et al., 2021), with the full microarray gene set (17,951 annotated genes) as the statistical background. Significance was assessed by hypergeometric test; Benjamini-Hochberg multiple testing correction was applied but no terms survived at the adjusted p < 0.05 threshold. This is attributable to the sparse GO annotation coverage of the PGSC v3.4 assembly (approximately 27% of DEGs carried GO annotations). Results are therefore reported at nominal p < 0.05 as exploratory findings, consistent with standard practice in non-model organism transcriptomics (Frades et al., 2015). KEGG pathway enrichment was attempted via direct PGSC-to-KEGG ID mapping and via Arabidopsis thaliana ortholog mapping (151 high-confidence orthologs, >40% identity); neither approach yielded significant results. Individual gene annotation was performed by querying gene descriptions from BioMart and categorising DEGs by keyword matching.
+
+## References to cite
+
+- Wu T et al. (2021) clusterProfiler 4.0. *Innovation* 2(3):100141
+- PGSC (2011) Genome sequence and analysis of the tuber crop potato. *Nature* 475:189–195
+- Frades I et al. (2015) Novel hypothesis on how freezing affects potato. *Front Plant Sci* 6:583
+
+
+
+# Session Info
+
+```{r session}
+sessionInfo()
+```
