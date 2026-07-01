@@ -51,6 +51,22 @@ R · limma · ggplot2 · pheatmap · clusterProfiler · biomaRt · ape
 
 ---
 
+## Data Availability
+The raw microarray data used in this project are publicly available 
+at ArrayExpress under accession number 
+[E-MTAB-2990](https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-2990).  
+Data were originally deposited by Pete Hedley, James Hutton Institute (2014).  
+No raw data files are hosted in this repository.
+
+---
+
+## Acknowledgements
+Sincere thanks to **Dr. Reem** (University of Sharjah, Research Institute 
+for Medical and Health Sciences) for her supervision, guidance, and 
+support throughout this internship project.  
+Thanks also to lab colleagues Fathima Nubla Latheef, Zoha Shaikh, 
+and Omar Mohammad for their encouragement and support.
+
 ## 👩‍🔬 Author
 **Halireena Rushdiha Mohomed**  
 MSc Bioinformatics, University of Birmingham Dubai
