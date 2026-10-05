@@ -28,7 +28,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
 After Stage 2, we have two lists of differentially expressed genes (DEGs):
 
 - **Analysis A** — 285 DEGs (Low Phosphate vs Regular Phosphate, with all samples)
-- **Analysis B** — 227 DEGs (Regular Phosphate vs High Phosphate, outlier removed)
+- **Analysis B** — 227 DEGs (Low Phosphate vs Regular Phosphate, outlier Reg P replicate removed)
 
 These are just lists of identifiers like `PGSC0003DMT400069516`. On their own they mean nothing. Stage 3 asks: **what do these genes actually do?**
 
@@ -121,15 +121,15 @@ cat("✅ All packages loaded\n")
 #                         probe annotations in norm_filtered$genes)
 # ─────────────────────────────────────────────────────────────────────────
 
-results_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/"
-raw_path     <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/data/raw/ZIP/"
+results_path <- "results/"    # relative to the repository root (see README)
+raw_path     <- "data/raw/"   # same folder as data_path in Stage 1
 
 load(paste0(results_path, "DEG_results.RData"))
 load(paste0(results_path, "normalised_data.RData"))
 
 cat("✅ Data loaded successfully\n\n")
 cat("Analysis A DEGs (Low P vs Reg P): ", nrow(degs_A), "\n")
-cat("Analysis B DEGs (Reg P vs High P):", nrow(degs_B), "\n")
+cat("Analysis B DEGs (Low P vs Reg P, no outlier):", nrow(degs_B), "\n")
 ```
 
 ---
@@ -440,7 +440,7 @@ print(head(nom_A[, c("Description", "GeneRatio", "BgRatio",
 # Step 6: GO Enrichment — Analysis B
 
 ```{r go-enrichment-B}
-# Same approach for Analysis B (Reg P vs High P)
+# Same approach for Analysis B (Low P vs Reg P, outlier removed)
 
 cat("Running GO enrichment for Analysis B...\n\n")
 
@@ -577,7 +577,7 @@ p_go_B <- ggplot(nom_B_plot,
   theme_minimal(base_size = 12) +
   labs(
     title    = "GO Enrichment — Analysis B",
-    subtitle = "Regular Phosphate vs High Phosphate | Nominal p < 0.05",
+    subtitle = "Low Phosphate vs Regular Phosphate (outlier removed) | Nominal p < 0.05",
     x        = "Gene Ratio",
     y        = NULL
   ) +
@@ -600,9 +600,9 @@ cat("✅ Saved: GO_dotplot_Analysis_B.png\n")
 
 ```{r deg-overlap}
 # ── What does the overlap tell us? ───────────────────────────────────────
-# If a gene is differentially expressed in BOTH Analysis A and B,
-# it means it responds across the FULL phosphate concentration gradient
-# (not just one transition). This is a stronger, more robust finding.
+# Analysis A and B test the SAME contrast (Low P vs Reg P); B simply drops
+# the outlier Reg P replicate. A gene that is a DEG in BOTH analyses is
+# therefore robust to that replicate — a stronger, more reliable finding.
 # ─────────────────────────────────────────────────────────────────────────
 
 overlap_genes <- intersect(pgsc_ids_A_gene, pgsc_ids_B_gene)
@@ -616,14 +616,14 @@ cat("Shared (A ∩ B): ", length(overlap_genes), "genes\n")
 cat("Overlap %:      ",
     round(100 * length(overlap_genes) / length(pgsc_ids_B_gene), 1),
     "% of Analysis B DEGs also in Analysis A\n\n")
-cat("Interpretation: The 81% overlap indicates a core transcriptional\n")
-cat("response maintained across the full phosphate concentration gradient.\n")
+cat("Interpretation: a high overlap indicates that the core transcriptional\n")
+cat("response does not depend on the outlier Reg P replicate.\n")
 ```
 
 ```{r venn-ab}
 venn_list <- list(
   "Analysis A\n(Low P vs Reg P)"  = pgsc_ids_A_gene,
-  "Analysis B\n(Reg P vs High P)" = pgsc_ids_B_gene
+  "Analysis B\n(Low P vs Reg P,\nno outlier)" = pgsc_ids_B_gene
 )
 
 p_venn <- ggVennDiagram(
@@ -767,7 +767,10 @@ for (term_name in names(results_list)) {
   hits <- results_list[[term_name]]
   for (i in seq_len(nrow(hits))) {
     tid       <- hits$ensembl_transcript_id[i]
-    match_idx <- which(pgsc_ids_A == tid)
+    # Match against annot_A (row-aligned with degs_A), NOT pgsc_ids_A:
+    # pgsc_ids_A is de-duplicated and has control probes removed, so its
+    # positions do not correspond to rows of degs_A.
+    match_idx <- which(annot_A$SystematicName == tid)
     if (length(match_idx) > 0) {
       lfc <- degs_A$logFC[match_idx[1]]
       dir <- ifelse(lfc > 0, "⬆ UP", "⬇ DOWN")
@@ -798,6 +801,9 @@ cat("✅ Saved: Key_genes_annotated.csv\n")
 # are mostly upregulated, mostly downregulated, or mixed.
 # ─────────────────────────────────────────────────────────────────────────
 
+# NOTE: these counts/directions are typed in from the output of the
+# key-gene-categories and expression-direction chunks above. Re-check them
+# against that output if the upstream data or code changes.
 cat_summary <- data.frame(
   Category  = c("Membrane Transport", "Lipid Metabolism",
                 "Stress Response",    "Cell Wall",
@@ -849,10 +855,11 @@ cat("║           STAGE 3 — RESULTS SUMMARY                 ║\n")
 cat("╠══════════════════════════════════════════════════════╣\n")
 cat(sprintf("║  Analysis A DEGs (Low P vs Reg P):     %4d          ║\n",
             length(pgsc_ids_A)))
-cat(sprintf("║  Analysis B DEGs (Reg P vs High P):    %4d          ║\n",
+cat(sprintf("║  Analysis B DEGs (no outlier):         %4d          ║\n",
             length(pgsc_ids_B)))
-cat(sprintf("║  Shared DEGs (A ∩ B):                  %4d  (81%%)   ║\n",
-            length(overlap_genes)))
+cat(sprintf("║  Shared DEGs (A ∩ B):                  %4d  (%2.0f%%)   ║\n",
+            length(overlap_genes),
+            100 * length(overlap_genes) / length(pgsc_ids_B_gene)))
 cat("╠══════════════════════════════════════════════════════╣\n")
 cat("║  KEGG (direct):         ❌ PGSC IDs not in KEGG      ║\n")
 cat("║  KEGG (Arabidopsis):    ❌ 151 orthologs, no sig.     ║\n")

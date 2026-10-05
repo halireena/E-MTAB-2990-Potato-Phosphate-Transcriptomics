@@ -88,11 +88,18 @@ cat("  ggplot2 version:", as.character(packageVersion("ggplot2")), "\n")
 ```{r set-paths}
 # ── Why define paths at the top? ─────────────────────────────────────────
 # Centralising paths means one edit updates the whole notebook
+# Paths are RELATIVE to the repository root (the folder holding this .Rmd),
+# which is the working directory when knitting / rmarkdown::render().
+# See README.md → "Data setup" for the expected folder layout.
 # ─────────────────────────────────────────────────────────────────────────
 
-data_path     <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/data/raw/ZIP/"
-metadata_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/metadata/"
-results_path  <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/"
+data_path     <- "data/raw/"   # the 24 Agilent .txt files from E-MTAB-2990
+metadata_path <- "metadata/"   # E-MTAB-2990.sdrf.txt
+results_path  <- "results/"    # all outputs (shared by Stages 1-5)
+
+if (!file.exists(paste0(metadata_path, "E-MTAB-2990.sdrf.txt"))) {
+  stop("SDRF not found in '", metadata_path, "'. See README.md (Data setup).")
+}
 
 # Create results folder if it doesn't exist
 if (!dir.exists(results_path)) {

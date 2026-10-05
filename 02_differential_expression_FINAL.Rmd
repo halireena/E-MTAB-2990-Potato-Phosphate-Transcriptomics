@@ -68,7 +68,7 @@ When testing 38,885 probes at p<0.05, we expect ~1,944 false positives by chance
 | **A — With outlier** | 6 (3 Low P + 3 Reg P) | Main result |
 | **B — Without outlier** | 5 (3 Low P + 2 Reg P) | Robustness/sensitivity check |
 
-The PCA in Stage 1 identified one Reg P replicate (US10310381_253303310046_S01_GE1_107_Sep09_1_4.txt) as an outlier. Inter-array correlation for this sample ranged from r=0.890–0.927, approaching but not falling below the r=0.90 threshold recommended by Shi et al. (2006, MAQC study). By running both analyses, we can assess whether our conclusions are driven by this variable replicate or reflect genuine biology.
+The PCA in Stage 1 identified one Reg P replicate (US10310381_253303310046_S01_GE1_107_Sep09_1_4.txt) as an outlier. Inter-array correlation for this sample ranged from r=0.890–0.927, i.e. its lowest pairwise correlation fell just below the r=0.90 threshold recommended by Shi et al. (2006, MAQC study) while the others were above it — a borderline case rather than a clear failure. By running both analyses, we can assess whether our conclusions are driven by this variable replicate or reflect genuine biology.
 
 ---
 
@@ -83,7 +83,7 @@ library(dplyr)        # Data manipulation
 library(pheatmap)     # Heatmaps
 
 # ── Load Stage 1 output ───────────────────────────────────────────────────
-results_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/"
+results_path <- "results/"   # relative to the repository root (see README)
 
 load(paste0(results_path, "normalised_data.RData"))
 
@@ -148,8 +148,8 @@ cat("\n=== OUTLIER IDENTIFICATION ===\n")
 cat("Outlier file:", OUTLIER_FILE, "\n")
 cat("Outlier position in MP matrix (column):", outlier_col, "\n")
 cat("Outlier condition:", mp_targets$Condition[outlier_col], "\n")
-cat("Evidence: Inter-array correlation r=0.890-0.927, approaching\n")
-cat("but not below the r=0.90 threshold (Shi et al. 2006, MAQC)\n")
+cat("Evidence: Inter-array correlation r=0.890-0.927; minimum just\n")
+cat("below the r=0.90 threshold (Shi et al. 2006, MAQC) — borderline\n")
 ```
 
 ---

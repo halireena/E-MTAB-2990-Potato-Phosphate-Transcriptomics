@@ -34,7 +34,7 @@ library(ape)
 
 # Load the Newick tree downloaded from NCBI BLAST Tree View
 # Query: PGSC0003DMT400069516 mRNA sequence BLASTed against Viridiplantae refseq_rna
-tree_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/tree.nwk"
+tree_path <- "data/tree.nwk"   # relative to the repository root (see README)
 tree <- read.tree(tree_path)
 
 # Clean tip labels:
@@ -131,7 +131,7 @@ if (length(missing) > 0) {
 
 ```{r evo_step3_prune_and_plot, message=FALSE, warning=FALSE}
 # Re-load and re-clean tree (ensures chunk is self-contained)
-tree_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/tree.nwk"
+tree_path <- "data/tree.nwk"   # relative to the repository root (see README)
 tree <- read.tree(tree_path)
 
 clean <- gsub("'", "", tree$tip.label)
@@ -207,7 +207,8 @@ get_colour <- function(label) {
 tip_cols <- sapply(tree_pruned$tip.label, get_colour)
 
 # Save high-resolution PNG
-output_path <- "C:/Users/hrush/Desktop/UoS/project/Maris piper/results/phylogenetic_tree_final.png"
+if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+output_path <- "results/phylogenetic_tree_final.png"
 png(output_path, width = 2800, height = 1600, res = 150)
 par(mar = c(4, 6, 6, 2))
 
