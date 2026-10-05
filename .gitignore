@@ -47,3 +47,21 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# ---- Project-specific ----------------------------------------------------
+# Raw microarray data (download from ArrayExpress; not redistributed here)
+data/raw/
+
+# Large intermediate R objects written by the notebooks
+results/*.RData
+
+# Rendered R Markdown output (regenerate with rmarkdown::render)
+/0*_*.html
+*_files/
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# Downloaded archives (download_data.R unzips them into data/raw/)
+data/zips/
