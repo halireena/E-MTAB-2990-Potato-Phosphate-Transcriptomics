@@ -26,6 +26,13 @@ knitr::opts_chunk$set(
 )
 ```
 
+> **Stage 2 at a glance**
+>
+> - **Needs:** `results/normalised_data.RData` from Stage 1 (run `01_load_QC_FIXED.Rmd` first).
+> - **Produces:** `results/DEG_results.RData` (objects `degs_A`, `degs_B`, `results_A`, `results_B`, `mp_targets`, `mp_expr`, `mp_expr_B`, `mp_targets_B`; loaded by Stages 3 and 4) plus the DEG / full-result CSV tables listed at the end. It also re-writes `MP_interarray_correlations.csv` (same values as Stage 1, different column labels).
+> - **Run time:** under a minute.
+> - Terms used here (DEG, log2FC, adj.P.Val / FDR, design matrix, contrast, eBayes) are explained in the README **Glossary**.
+
 ---
 
 # Background and Rationale
@@ -84,6 +91,13 @@ library(pheatmap)     # Heatmaps
 
 # ── Load Stage 1 output ───────────────────────────────────────────────────
 results_path <- "results/"   # relative to the repository root (see README)
+
+needed_files <- c(paste0(results_path, "normalised_data.RData"))
+missing_files <- needed_files[!file.exists(needed_files)]
+if (length(missing_files) > 0) {
+  stop("Missing input file(s): ", paste(missing_files, collapse = ", "),
+       "\nRender 01_load_QC_FIXED.Rmd first (README -> How to run).")
+}
 
 load(paste0(results_path, "normalised_data.RData"))
 

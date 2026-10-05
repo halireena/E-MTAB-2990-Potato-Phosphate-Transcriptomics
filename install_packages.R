@@ -58,6 +58,7 @@ for (p in all_pkgs) {
 }
 if (!all(ok)) {
   stop("Some packages failed to install: ",
-       paste(all_pkgs[!ok], collapse = ", "))
+       paste(all_pkgs[!ok], collapse = ", "),
+       "\nSee README.md -> Troubleshooting for common Bioconductor install errors.")
 }
 cat("All packages available.\n")

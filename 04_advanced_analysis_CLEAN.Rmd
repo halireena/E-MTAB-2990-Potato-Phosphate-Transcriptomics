@@ -20,6 +20,13 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
 set.seed(2990)  # ggrepel label placement is random — fix it for reproducible figures
 ```
 
+> **Stage 4 at a glance**
+>
+> - **Needs:** `results/normalised_data.RData` (Stage 1), `results/DEG_results.RData` (Stage 2), `results/Stage3_complete.RData` and `results/Key_genes_annotated.csv` (Stage 3).
+> - **Produces:** `results/Stage4_complete.RData`, per-cultivar DEG tables, common / Maris Piper-unique gene lists and 10 figures (`.png`).
+> - **Run time:** about 1-2 minutes.
+> - The 8-group model here is a *different* model from Stage 2 (see Overview), so its Maris Piper DEG count is not 285.
+
 ---
 
 # Overview & Learning Goals
@@ -45,6 +52,17 @@ Now we ask: are these genes specific to Maris Piper, or do all cultivars respond
 # Load Libraries & Data
 
 ```{r load}
+# Packages are installed ONCE, before rendering, with install_packages.R
+# (see README -> "Quick start"). Rendering never installs anything itself.
+needed_pkgs  <- c("limma", "ggplot2", "dplyr", "pheatmap", "RColorBrewer", "ggrepel", "ggVennDiagram")
+missing_pkgs <- needed_pkgs[!vapply(needed_pkgs, requireNamespace, logical(1),
+                                    quietly = TRUE)]
+if (length(missing_pkgs) > 0) {
+  stop("Missing R packages: ", paste(missing_pkgs, collapse = ", "),
+       "\nRun `Rscript install_packages.R` from the repository root first ",
+       "(README -> Troubleshooting if Bioconductor installs fail).")
+}
+
 # --- Core libraries ---
 library(limma)       # Microarray statistics (DEG analysis)
 library(ggplot2)     # Plotting
@@ -52,9 +70,7 @@ library(dplyr)       # Data manipulation
 library(pheatmap)    # Heatmaps
 library(RColorBrewer) # Colour palettes
 
-# --- Extra libraries (install if needed) ---
-if (!requireNamespace("ggrepel",       quietly = TRUE)) install.packages("ggrepel")
-if (!requireNamespace("ggVennDiagram", quietly = TRUE)) install.packages("ggVennDiagram")
+# --- Extra libraries ---
 library(ggrepel)       # Smart non-overlapping labels on plots
 library(ggVennDiagram) # 4-way Venn diagrams
 
@@ -66,6 +82,16 @@ results_path <- "results/"   # relative to the repository root (see README)
 # normalised_data.RData  → norm_filtered (expression matrix), targets (sample info)
 # DEG_results.RData      → degs_A, degs_B (Stage 2 DEG tables)
 # Stage3_complete.RData  → pgsc_ids_A, pgsc_ids_B (PGSC transcript IDs)
+
+needed_files <- c(paste0(results_path, "normalised_data.RData"),
+                  paste0(results_path, "DEG_results.RData"),
+                  paste0(results_path, "Stage3_complete.RData"),
+                  paste0(results_path, "Key_genes_annotated.csv"))
+missing_files <- needed_files[!file.exists(needed_files)]
+if (length(missing_files) > 0) {
+  stop("Missing input file(s): ", paste(missing_files, collapse = ", "),
+       "\nRender Stages 1, 2 and 3 first, in order (README -> How to run).")
+}
 
 load(paste0(results_path, "normalised_data.RData"))
 load(paste0(results_path, "DEG_results.RData"))
@@ -797,9 +823,9 @@ cat("✅ Saved: Coexpression_matrix.png\n")
 
 summary_data <- data.frame(
   Analysis = c(
-    "MP DEGs (Analysis A, with outlier)",
+    "MP DEGs (Stage 4, 8-group model)",
     "MP unique to Maris Piper",
-    "MP DEGs (Analysis B, no outlier)",
+    "MP DEGs (Stage 2 Analysis B, no outlier)",
     "MP + Pentland Dell shared",
     "Common (all 4 cultivars)",
     "MP + Stirling shared"

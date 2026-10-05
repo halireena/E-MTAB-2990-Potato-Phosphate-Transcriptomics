@@ -19,6 +19,14 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
                       fig.width = 10, fig.height = 7)
 ```
 
+> **Stage 3 at a glance**
+>
+> - **Needs:** `results/DEG_results.RData` (Stage 2), `results/normalised_data.RData` (Stage 1), the raw Agilent files in `data/raw/` (re-read for probe annotation) and an **internet connection** to Ensembl Plants BioMart.
+> - **Produces:** `results/Stage3_complete.RData` and `results/Key_genes_annotated.csv` (both loaded by Stage 4), GO enrichment tables, PGSC ID lists, annotation tables and figures (`.png`).
+> - **Run time:** about 3-10 minutes, almost all of it the BioMart download (depends on Ensembl server load).
+> - Terms used here (GO, KEGG, enrichment, background/universe, PGSC IDs, DMT vs DMG) are explained in the README **Glossary**.
+> - The KEGG attempts described below were done outside this notebook; there is no KEGG code here.
+
 ---
 
 # What Is This Stage Doing — And Why?
@@ -93,18 +101,21 @@ KEGG via Arabidopsis orthologs was also attempted (151 orthologs mapped) but ret
 # ggVennDiagram   : draws Venn diagrams
 # ─────────────────────────────────────────────────────────────────────────
 
-# Install any missing packages (run these lines once in the Console if needed)
-# BiocManager::install(c("clusterProfiler", "biomaRt"))
-# install.packages(c("ggplot2", "dplyr", "ggVennDiagram"))
+# Packages are installed ONCE, before rendering, with install_packages.R
+# (see README -> "Quick start"). Rendering never installs anything itself.
+needed_pkgs  <- c("ggplot2", "dplyr", "clusterProfiler", "biomaRt", "ggVennDiagram")
+missing_pkgs <- needed_pkgs[!vapply(needed_pkgs, requireNamespace, logical(1),
+                                    quietly = TRUE)]
+if (length(missing_pkgs) > 0) {
+  stop("Missing R packages: ", paste(missing_pkgs, collapse = ", "),
+       "\nRun `Rscript install_packages.R` from the repository root first ",
+       "(README -> Troubleshooting if Bioconductor installs fail).")
+}
 
 library(ggplot2)
 library(dplyr)
 library(clusterProfiler)
 library(biomaRt)
-
-if (!requireNamespace("ggVennDiagram", quietly = TRUE)) {
-  install.packages("ggVennDiagram")
-}
 library(ggVennDiagram)
 
 cat("✅ All packages loaded\n")
@@ -123,6 +134,18 @@ cat("✅ All packages loaded\n")
 
 results_path <- "results/"    # relative to the repository root (see README)
 raw_path     <- "data/raw/"   # same folder as data_path in Stage 1
+
+needed_files <- c(paste0(results_path, "DEG_results.RData"),
+                  paste0(results_path, "normalised_data.RData"))
+missing_files <- needed_files[!file.exists(needed_files)]
+if (length(missing_files) > 0) {
+  stop("Missing input file(s): ", paste(missing_files, collapse = ", "),
+       "\nRender 01_load_QC_FIXED.Rmd and 02_differential_expression_FINAL.Rmd first (README -> How to run).")
+}
+if (length(list.files(raw_path, pattern = "\\.txt$")) == 0) {
+  stop("No raw Agilent .txt files in '", raw_path, "'. Stage 3 re-reads one ",
+       "of them for probe annotation (README -> Get the data).")
+}
 
 load(paste0(results_path, "DEG_results.RData"))
 load(paste0(results_path, "normalised_data.RData"))

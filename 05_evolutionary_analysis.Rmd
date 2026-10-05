@@ -10,6 +10,13 @@ output:
     highlight: tango
 ---
 
+> **Stage 5 at a glance**
+>
+> - **Needs:** only `data/tree.nwk`, a Newick tree you download yourself from NCBI BLAST (README -> Get the data, step 4). It does not use any output of Stages 1-4 and needs only the CRAN package `ape`.
+> - **Produces:** `results/phylogenetic_tree_final.png`.
+> - **Run time:** a few seconds (the BLAST search itself, done on the NCBI website, takes a few minutes).
+> - Caveat: NCBI's "Distance tree of results" is a quick neighbour-joining tree built from BLAST pairwise alignments, not a formal phylogenetic analysis; BLAST hits also change as databases grow, so your tree may differ from the one described here.
+
 # Overview
 
 This script performs evolutionary analysis of the top differentially expressed gene (DEG) from the Maris Piper phosphate stress microarray dataset (E-MTAB-2990).
@@ -35,6 +42,10 @@ library(ape)
 # Load the Newick tree downloaded from NCBI BLAST Tree View
 # Query: PGSC0003DMT400069516 mRNA sequence BLASTed against Viridiplantae refseq_rna
 tree_path <- "data/tree.nwk"   # relative to the repository root (see README)
+if (!file.exists(tree_path)) {
+  stop("'", tree_path, "' not found. Create it from NCBI BLAST as described ",
+       "in README -> Get the data (step 4).")
+}
 tree <- read.tree(tree_path)
 
 # Clean tip labels:
@@ -289,3 +300,11 @@ Key observations:
 - The ABC transporter B family (ABCB) is well-characterised as an auxin efflux carrier — its upregulation under phosphate stress is consistent with **root architectural remodelling** to forage for phosphate
 
 > *"The ABCB transporter upregulated in Maris Piper under phosphate stress is deeply conserved across the Solanaceae, suggesting an ancient role in coordinating hormonal responses to nutrient deficiency."*
+
+---
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

@@ -62,3 +62,6 @@ results/*.RData
 # OS clutter
 .DS_Store
 Thumbs.db
+
+# Downloaded archives (download_data.R unzips them into data/raw/)
+data/zips/
