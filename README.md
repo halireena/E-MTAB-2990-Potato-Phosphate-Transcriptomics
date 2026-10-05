@@ -31,6 +31,8 @@ analysis of this dataset.
 - **100% upregulation** of all 11 acid phosphatases and all 6 PHT1
   phosphate transporters detected
 - **555 Maris Piper-unique DEGs** vs 137 shared across all four cultivars
+  (Stage 4, all-24-sample 8-group model — this model pools variance across
+  cultivars, so its Maris Piper DEG count is larger than the 285 from Stage 2)
 
 ---
 
@@ -46,8 +48,96 @@ analysis of this dataset.
 
 ---
 
-## Tools & Packages
-R · limma · ggplot2 · pheatmap · clusterProfiler · biomaRt · ape
+## Requirements
+
+- R ≥ 4.1 (developed with a recent R 4.x release)
+- Internet access for Stage 3 (Ensembl Plants BioMart queries)
+
+| Source | Packages |
+|--------|----------|
+| CRAN | rmarkdown, knitr, ggplot2, dplyr, RColorBrewer, pheatmap, ggrepel, ggVennDiagram, ape, BiocManager |
+| Bioconductor | limma, clusterProfiler, biomaRt |
+
+Install everything missing with:
+
+```r
+source("install_packages.R")
+```
+
+or manually:
+
+```r
+install.packages(c("rmarkdown", "knitr", "ggplot2", "dplyr", "RColorBrewer",
+                   "pheatmap", "ggrepel", "ggVennDiagram", "ape", "BiocManager"))
+BiocManager::install(c("limma", "clusterProfiler", "biomaRt"))
+```
+
+Each notebook ends with `sessionInfo()`, so the rendered HTML records the
+exact package versions used.
+
+---
+
+## Data setup
+
+All paths in the notebooks are **relative to the repository root**. Before
+running, create this layout (the `data/raw/` and `results/` folders are not
+tracked by git):
+
+```
+E-MTAB-2990-Potato-Phosphate-Transcriptomics/
+├── metadata/
+│   └── E-MTAB-2990.sdrf.txt      # sample sheet from ArrayExpress
+├── data/
+│   ├── raw/                      # the 24 Agilent Feature Extraction .txt files
+│   └── tree.nwk                  # (Stage 5 only) NCBI BLAST tree, Newick format
+└── results/                      # created by Stage 1; all outputs go here
+```
+
+1. Open [E-MTAB-2990 on BioStudies/ArrayExpress](https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-2990).
+2. Download the SDRF file (`E-MTAB-2990.sdrf.txt`) into `metadata/`.
+3. Download the raw data archive(s) and unzip the 24 `.txt` files into
+   `data/raw/`. The file names must match the `Array Data File` column of
+   the SDRF.
+4. *(Stage 5 only)* BLAST the `PGSC0003DMT400069516` mRNA sequence
+   (blastn, `refseq_rna`, organism = Viridiplantae) at NCBI, open
+   **Distance tree of results**, download it in Newick format and save it
+   as `data/tree.nwk`.
+
+---
+
+## How to run
+
+The stages must be run **in order** — each one loads the `.RData` files
+written by the previous stage(s) from `results/`.
+
+```r
+# from the repository root
+for (f in c("01_load_QC_FIXED.Rmd",
+            "02_differential_expression_FINAL.Rmd",
+            "03_Functional_Enrichment_Final.Rmd",
+            "04_advanced_analysis_CLEAN.Rmd",
+            "05_evolutionary_analysis.Rmd")) {
+  rmarkdown::render(f)
+}
+```
+
+Or open a notebook in RStudio and click **Knit**. Stage 5 only needs
+`data/tree.nwk` and can be run independently of Stages 1-4.
+
+---
+
+## Expected outputs
+
+Each notebook renders to an `.html` report next to the `.Rmd`. Files written
+to `results/`:
+
+| Stage | Key outputs |
+|-------|-------------|
+| 1 | `normalised_data.RData` (filtered `EList` + `targets`), `MP_interarray_correlations.csv` |
+| 2 | `DEG_results.RData`, `DEGs_A_with_outlier.csv`, `DEGs_B_without_outlier.csv`, `all_results_A.csv`, `all_results_B.csv`, `MP_PCA_scores.csv` |
+| 3 | `Stage3_complete.RData`, `GO_enrichment_nominal_A.csv` / `_B.csv`, `Key_genes_annotated.csv`, `potato_ensembl_annotation.csv`, `full_array_annotation.csv`, `DEG_PGSC_IDs_A.csv` / `_B.csv`, GO dotplots, Venn and category plots (`.png`) |
+| 4 | `Stage4_complete.RData`, per-cultivar DEG tables (`MP_`, `PD_`, `St_`, `12601_DEGs_stage4.csv`), `Common_response_all_cultivars.csv`, `MP_unique_DEGs.csv`, 10 figures (`Heatmap_top40.png`, `Volcano_plot.png`, `Venn_4cultivar.png`, …) |
+| 5 | `phylogenetic_tree_final.png` |
 
 ---
 
