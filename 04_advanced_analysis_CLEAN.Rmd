@@ -25,7 +25,7 @@ set.seed(2990)  # ggrepel label placement is random — fix it for reproducible 
 > - **Needs:** `results/normalised_data.RData` (Stage 1), `results/DEG_results.RData` (Stage 2), `results/Stage3_complete.RData` and `results/Key_genes_annotated.csv` (Stage 3).
 > - **Produces:** `results/Stage4_complete.RData`, per-cultivar DEG tables, common / Maris Piper-unique gene lists and 10 figures (`.png`).
 > - **Run time:** about 1-2 minutes.
-> - The 8-group model here is a *different* model from Stage 2 (see Overview), so its Maris Piper DEG count is not 285.
+> - The 8-group model here is a *different* model from Stage 2 (see Overview), so its Maris Piper DEG count differs from Stage 2's Analysis A count.
 
 ---
 
@@ -42,8 +42,8 @@ By the end of this stage you will have:
 **What is this dataset?**
 24 Agilent microarray samples from 4 potato cultivars (Maris Piper, Stirling, Pentland Dell, 12601),
 each grown under 2 phosphate conditions: Low P (phosphate starvation) and Regular P (normal).
-3 biological replicates per group. Stage 2 identified 285 DEGs in Maris Piper using the 6 Maris Piper
-samples only (Analysis A). Here all 24 samples are fitted in one 8-group model, so the residual variance
+3 biological replicates per group. Stage 2 identified DEGs in Maris Piper using the 6 Maris Piper
+samples only (Analysis A; the count is printed when the data are loaded below). Here all 24 samples are fitted in one 8-group model, so the residual variance
 is pooled across cultivars and the Maris Piper DEG count differs from (is larger than) Stage 2.
 Now we ask: are these genes specific to Maris Piper, or do all cultivars respond the same way?
 
@@ -102,9 +102,20 @@ load(paste0(results_path, "Stage3_complete.RData"))
 key_genes <- read.csv(paste0(results_path, "Key_genes_annotated.csv"),
                       stringsAsFactors = FALSE)
 
+# Stage 1 now removes all Agilent control probes; stop on an old RData
+if (is.null(norm_filtered$genes$ControlType) ||
+    any(norm_filtered$genes$ControlType != 0)) {
+  stop("normalised_data.RData still contains control probes (or lacks ControlType).\n",
+       "Re-render Stages 1, 2 and 3 in order.")
+}
+if (!exists("cat_summary") || is.null(cat_summary$Key)) {
+  stop("Stage3_complete.RData has no computed cat_summary — re-render Stage 3.")
+}
+
 cat("✅ All data loaded successfully\n")
 cat("Expression matrix:", nrow(norm_filtered$E), "probes x",
-    ncol(norm_filtered$E), "samples\n\n")
+    ncol(norm_filtered$E), "samples (control probes removed)\n")
+cat("Stage 2 Analysis A DEGs (6-sample model):", nrow(degs_A), "\n\n")
 
 cat("Cultivars and conditions in dataset:\n")
 print(table(targets$Cultivar, targets$Condition))
@@ -206,9 +217,13 @@ cat("Pentland Dell:", nrow(sig_PD),    "(", sum(sig_PD$logFC > 0),    "up,", sum
 cat("Stirling:     ", nrow(sig_St),    "(", sum(sig_St$logFC > 0),    "up,", sum(sig_St$logFC < 0),    "down)\n")
 cat("12601:        ", nrow(sig_12601), "(", sum(sig_12601$logFC > 0), "up,", sum(sig_12601$logFC < 0), "down)\n")
 
-# --- What to say in your presentation ---
-# Maris Piper has the MOST DEGs → most transcriptionally responsive to phosphate stress
-# 12601 has the FEWEST DEGs → possibly more tolerant / less sensitive
+# --- What to say in your presentation (computed from the counts above) ---
+n_degs_cv <- c("Maris Piper" = nrow(sig_MP), "Pentland Dell" = nrow(sig_PD),
+               "Stirling" = nrow(sig_St), "12601" = nrow(sig_12601))
+cat("\nMost DEGs: ", names(which.max(n_degs_cv)),
+    "→ most transcriptionally responsive to phosphate stress\n")
+cat("Fewest DEGs:", names(which.min(n_degs_cv)),
+    "→ possibly more tolerant / less sensitive\n")
 # More DEGs ≠ "better" — it means the plant is making more molecular adjustments
 ```
 
@@ -509,9 +524,15 @@ p_top <- ggplot(top_combined,
 
 print(p_top)
 
-# --- What to look for ---
-# The top upregulated gene has logFC ~6.5 = 2^6.5 ≈ 91-fold higher in Low P!
-# All upregulated bars are longer than downregulated = stronger activation than repression
+# --- What to look for (computed) ---
+cat("Top upregulated gene:", top_up$SystematicName[1],
+    "| logFC =", round(top_up$logFC[1], 2),
+    "=", round(2^top_up$logFC[1], 1), "-fold higher in Low P\n")
+cat("Top downregulated gene:", top_down$SystematicName[1],
+    "| logFC =", round(top_down$logFC[1], 2),
+    "=", round(2^abs(top_down$logFC[1]), 1), "-fold lower in Low P\n")
+cat("Largest up bar longer than largest down bar:",
+    abs(top_up$logFC[1]) > abs(top_down$logFC[1]), "\n")
 # These are your headline genes for the report
 
 ggsave(paste0(results_path, "Top_DEGs_barplot.png"), p_top, width = 10, height = 8, dpi = 300)
@@ -685,8 +706,21 @@ pheatmap(
 )
 
 # --- What to look for (and say in your presentation) ---
-# ALL genes should be uniformly red in Low P and blue in Reg P — no exceptions
-# This is the textbook phosphate starvation response
+# Expectation: genes red in Low P and blue in Reg P. Check it with numbers —
+# the Maris Piper logFC (8-group model) of each key gene, from its first probe:
+key_lfc <- mp_res$all$logFC[match(key_subset$ensembl_transcript_id,
+                                  mp_res$all$SystematicName)]
+key_dir <- data.frame(
+  Family = key_subset$Category,
+  Up     = !is.na(key_lfc) & key_lfc > 0,
+  Down   = !is.na(key_lfc) & key_lfc < 0
+)
+if (nrow(key_dir) > 0) {
+  cat("\nMaris Piper direction of key genes (8-group model):\n")
+  print(aggregate(cbind(Up, Down) ~ Family, data = key_dir, FUN = sum))
+  cat("All key genes up in Low P:", all(key_dir$Up), "\n")
+}
+# If TRUE, this is the textbook phosphate starvation response
 # Acid phosphatases: release phosphate from organic compounds in the soil
 # Phosphate transporters: pump inorganic phosphate from soil into root cells
 # Both gene families activated simultaneously = coordinated phosphate acquisition response
@@ -714,24 +748,22 @@ cat("✅ Saved: Heatmap_key_genes.png\n")
 
 ```{r category-summary}
 # This bar chart summarises the biological functions of ALL annotated DEGs
-# Categories were assigned in Stage 3 based on keyword matching against gene descriptions
+# Categories were assigned in Stage 3 based on keyword matching against gene descriptions.
+# Counts and directions are COMPUTED in Stage 3 (cat_summary, saved in
+# Stage3_complete.RData) from the Analysis A logFC signs — not typed in here.
 
-category_summary <- data.frame(
-  Category  = c("Membrane Transport", "Lipid Metabolism", "Stress Response",
-                "Cell Wall", "Transcription Factors", "Acid Phosphatase",
-                "Phosphate Transport", "Auxin Signalling"),
-  Count     = c(30, 16, 14, 13, 12, 11, 6, 4),
-  Direction = c("Mixed", "Mostly UP", "Mostly UP", "Mostly UP",
-                "Mixed", "All UP", "All UP", "Mixed")
-)
+category_summary <- cat_summary[, c("Category", "Count", "N_up", "N_down", "Direction")]
+print(category_summary, row.names = FALSE)
 
 p_cat <- ggplot(category_summary,
                 aes(x = reorder(Category, Count), y = Count, fill = Direction)) +
   geom_col(alpha = 0.85, width = 0.7) +
   scale_fill_manual(values = c(
-    "All UP"    = "#C0392B",
-    "Mostly UP" = "#E67E22",
-    "Mixed"     = "#7F8C8D"
+    "ALL UP"      = "#C0392B",
+    "Mostly UP"   = "#E67E22",
+    "Mixed"       = "#7F8C8D",
+    "Mostly DOWN" = "#5DADE2",
+    "ALL DOWN"    = "#2471A3"
   )) +
   coord_flip() +
   theme_minimal(base_size = 12) +
@@ -745,11 +777,14 @@ p_cat <- ggplot(category_summary,
 
 print(p_cat)
 
-# --- What to say ---
-# Membrane transport is the largest category — phosphate is a nutrient, so the plant
-# invests heavily in moving molecules around when it is scarce
-# Acid Phosphatase and Phosphate Transport are ALL UP — 100% consistency = strong signal
-# Stress response and cell wall categories = plant is also physically remodelling roots
+# --- What to say (computed) ---
+cat("Largest category:", category_summary$Category[which.max(category_summary$Count)], "\n")
+for (k in c("Acid Phosphatase", "Phosphate Transport")) {
+  d <- category_summary$Direction[category_summary$Category == k]
+  cat(k, "direction:", if (length(d) == 0) "no genes matched" else d, "\n")
+}
+# "ALL UP" for both = 100% consistency = strong signal
+# Stress response and cell wall categories = plant may also be remodelling roots
 
 ggsave(paste0(results_path, "Category_summary_plot.png"),
        p_cat, width = 9, height = 6, dpi = 300)

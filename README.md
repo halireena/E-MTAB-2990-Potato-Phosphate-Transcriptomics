@@ -62,22 +62,27 @@ root tissue, one-colour Agilent microarray, **24 arrays**.
 
 ## 2. Key findings
 
-These numbers come from the author's rendered notebooks. This README does not
-recompute them, so check them against your own HTML reports after running the
-pipeline (see [section 10](#10-known-limitations-and-analysis-caveats)).
+> **Results must be regenerated.** The analysis was corrected after the
+> author's original run (control probes removed before limma, noise threshold
+> from all negative controls, enrichment background = tested genes; see
+> [Analysis changes](#analysis-changes)). The DEG counts, enrichment results
+> and key-gene numbers from the original run are therefore out of date and are
+> no longer quoted here. Re-run Stages 1-4 and read the numbers from your own
+> HTML reports; the notebooks now compute every number they report.
 
-| Finding | Source | Figure to look at |
+| Finding (what to look for) | Source | Figure to look at |
 |---|---|---|
-| **285 DEGs** in Maris Piper, Low P vs Reg P, about 73% up-regulated | Stage 2, Analysis A | volcano plots in the Stage 2 HTML report |
-| The DEG list is largely the same when the outlier array is dropped (Analysis B: 227 DEGs) | Stage 2 A vs B comparison | `results/Venn_DEG_overlap_AB.png` |
-| All 11 acid phosphatases and all 6 phosphate transporters (PHT1 family) found among the DEGs are **up-regulated**, the textbook starvation response | Stage 3 keyword annotation | `results/Heatmap_key_genes.png` |
-| Root-hair development and other GO terms are enriched at nominal p < 0.05, but **none survive multiple-testing correction** | Stage 3 | `results/GO_dotplot_Analysis_A.png` |
-| In a model fitted to all 24 arrays, **555 DEGs are unique to Maris Piper** and **137 are shared by all four cultivars** | Stage 4 | `results/Venn_4cultivar.png`, `results/Response_classification.png` |
-| A strongly induced ABC transporter (ABCB family, `PGSC0003DMT400069516`) has close BLAST matches across the nightshade family (Solanaceae) | Stage 5 | `results/phylogenetic_tree_final.png` |
+| Number of DEGs in Maris Piper, Low P vs Reg P, and the share that is up-regulated | Stage 2, Analysis A | volcano plots in the Stage 2 HTML report |
+| Whether the DEG list stays largely the same when the outlier array is dropped (Analysis B) | Stage 2 A vs B comparison | `results/Venn_DEG_overlap_AB.png` |
+| Direction of the acid phosphatases and phosphate transporters (PHT1 family) among the DEGs. In the original run all of them were up-regulated, the textbook starvation response; *to verify after re-run* | Stage 3 keyword annotation (`cat_summary`), Stage 4 key-gene check | `results/Functional_categories_barplot.png`, `results/Heatmap_key_genes.png` |
+| GO terms enriched at nominal p < 0.05 (root-hair development in the original run), and whether any survive multiple-testing correction | Stage 3 | `results/GO_dotplot_Analysis_A.png` |
+| In a model fitted to all 24 arrays: Maris Piper-unique DEGs vs DEGs shared by all four cultivars | Stage 4 | `results/Venn_4cultivar.png`, `results/Response_classification.png` |
+| A strongly induced ABC transporter (ABCB family, `PGSC0003DMT400069516`) has close BLAST matches across the nightshade family (Solanaceae) | Stage 5 (independent of the fixes) | `results/phylogenetic_tree_final.png` |
 
 > Stage 4 fits one model to all 24 arrays, so its error estimate is pooled
-> across cultivars and its Maris Piper DEG count is larger than Stage 2's 285.
-> The two counts come from different models, so they do not contradict each other.
+> across cultivars and its Maris Piper DEG count is larger than Stage 2's
+> Analysis A count. The two counts come from different models, so they do not
+> contradict each other.
 
 ---
 
@@ -102,7 +107,7 @@ pipeline (see [section 10](#10-known-limitations-and-analysis-caveats)).
 
 | Stage | Notebook | What it does | Reads | Writes (hand-off files in **bold**) | Approx. time |
 |---|---|---|---|---|---|
-| 1 | `01_load_QC_FIXED.Rmd` | Load raw arrays, QC plots, background correction, quantile normalisation, low-signal filtering, PCA, outlier check | `metadata/E-MTAB-2990.sdrf.txt`, `data/raw/*.txt` | **`results/normalised_data.RData`** | 1-3 min |
+| 1 | `01_load_QC_FIXED.Rmd` | Load raw arrays, QC plots, background correction, quantile normalisation, negative-control noise threshold, control-probe removal, low-signal filtering, PCA, outlier check | `metadata/E-MTAB-2990.sdrf.txt`, `data/raw/*.txt` | **`results/normalised_data.RData`** | 1-3 min |
 | 2 | `02_differential_expression_FINAL.Rmd` | limma DE for Maris Piper, Low P vs Reg P: Analysis A (6 arrays) and B (5 arrays) | `normalised_data.RData` | **`results/DEG_results.RData`** + CSV tables | < 1 min |
 | 3 | `03_Functional_Enrichment_Final.Rmd` | Map probes to genes, GO enrichment (clusterProfiler), keyword-based gene-family annotation | `DEG_results.RData`, `normalised_data.RData`, one file in `data/raw/`, **internet** | **`results/Stage3_complete.RData`**, **`results/Key_genes_annotated.csv`** + GO tables and figures | 3-10 min (BioMart download) |
 | 4 | `04_advanced_analysis_CLEAN.Rmd` | 8-group limma model (4 cultivars × 2 conditions), cross-cultivar comparison, heatmaps, Venn, co-expression | outputs of Stages 1-3 | `results/Stage4_complete.RData` + per-cultivar tables + 10 figures | 1-2 min |
@@ -227,9 +232,9 @@ Objects passed between stages:
 
 | File | Written by | Loaded by | Objects inside |
 |---|---|---|---|
-| `results/normalised_data.RData` | Stage 1 | 2, 3, 4 | `norm_filtered` (limma `EList`: `$E` = log2 expression, `$genes` = probe annotation), `targets` (FileName, Cultivar, Condition) |
+| `results/normalised_data.RData` | Stage 1 | 2, 3, 4 | `norm_filtered` (limma `EList`: `$E` = log2 expression, `$genes` = probe annotation; Agilent control probes removed), `targets` (FileName, Cultivar, Condition) |
 | `results/DEG_results.RData` | Stage 2 | 3, 4 | `degs_A`, `degs_B` (DEG tables), `results_A`, `results_B` (all probes), `mp_targets`, `mp_expr`, `mp_targets_B`, `mp_expr_B` |
-| `results/Stage3_complete.RData` | Stage 3 | 4 | PGSC ID lists, `ego_A` / `ego_B` enrichment objects, `nom_A` / `nom_B`, `full_deg_anno`, `term2gene_full`, … |
+| `results/Stage3_complete.RData` | Stage 3 | 4 | PGSC ID lists, `ego_A` / `ego_B` enrichment objects, `nom_A` / `nom_B`, `full_deg_anno`, `term2gene_full` (GO map of the tested genes), `tested_gene` (enrichment universe), `cat_summary` (computed functional-category counts and directions, used by Stage 4), … |
 | `results/Key_genes_annotated.csv` | Stage 3 | 4 | DEGs with BioMart descriptions and a functional `Category` |
 
 The `.RData` files are git-ignored, so a fresh clone never contains them. You
@@ -252,7 +257,7 @@ easiest place to read the results. Files written to `results/`:
 
 **Reading a DEG table** (for example `DEGs_A_with_outlier.csv`): each row is
 one probe. The first, unnamed column is the probe's row number in the filtered
-matrix. `SystematicName` is the PGSC transcript ID, `logFC` is the log2 fold
+matrix (control probes already removed). `SystematicName` is the PGSC transcript ID, `logFC` is the log2 fold
 change (Low P relative to Reg P), and `adj.P.Val` is the FDR-adjusted p-value.
 
 ---
@@ -264,7 +269,7 @@ change (Low P relative to Reg P), and `adj.P.Val` is the FDR-adjusted p-value.
 | **Microarray** | A glass slide carrying tens of thousands of short DNA probes. Labelled RNA from a sample sticks to matching probes, and the brightness of each spot measures how much of that transcript was present. |
 | **Agilent one-colour (single-channel)** | Each array is hybridised with **one** sample labelled with a single dye (Cy3, "green"). Two-colour arrays instead put two samples (Cy3 + Cy5) on one slide and measure their ratio. This dataset is one-colour, hence `green.only = TRUE` in Stage 1. |
 | **Probe** | One spot on the array, designed against one transcript. Several probes can target the same gene. |
-| **Control probes** | Built-in spots that are not potato genes (`ControlType` ≠ 0). Negative controls measure background noise. |
+| **Control probes** | Built-in spots that are not potato genes (`ControlType` ≠ 0). Negative controls (`ControlType` = −1) measure background noise. Stage 1 uses the negative controls to set the noise threshold and then removes all control probes before anything is saved. |
 | **SDRF / IDF** | ArrayExpress metadata files (MAGE-TAB format). The SDRF maps each data file to its sample attributes, and the IDF describes the experiment. |
 | **Background correction (normexp)** | Removes the non-specific glow under each spot without producing negative values. |
 | **Quantile normalisation** | Gives every array the same intensity distribution, so that differences between arrays reflect biology rather than labelling or scanning. |
@@ -273,12 +278,12 @@ change (Low P relative to Reg P), and `adj.P.Val` is the FDR-adjusted p-value.
 | **limma** | Bioconductor package that fits a linear model to every probe. Its **empirical Bayes** step (`eBayes`) borrows variance information across probes, which matters with only 3 replicates per group. |
 | **Design matrix** | A table telling limma which group each array belongs to. `~0 + group` gives one column per group. |
 | **Contrast** | The comparison being tested, e.g. `Low.P - Reg.P`. A positive logFC means higher under phosphate starvation. |
-| **p-value / adj.P.Val / FDR / padj** | With about 39,000 probes tested, roughly 5% would pass p < 0.05 by chance. The Benjamini-Hochberg (BH) method adjusts the p-values to control the **false discovery rate** (FDR): among genes called significant at adj.P.Val < 0.05, about 5% are expected to be false positives. DESeq2 calls the same quantity "padj". |
+| **p-value / adj.P.Val / FDR / padj** | With tens of thousands of probes tested, roughly 5% would pass p < 0.05 by chance. The Benjamini-Hochberg (BH) method adjusts the p-values to control the **false discovery rate** (FDR): among genes called significant at adj.P.Val < 0.05, about 5% are expected to be false positives. DESeq2 calls the same quantity "padj". |
 | **DEG** | Differentially expressed gene. Here it means adj.P.Val < 0.05 **and** \|logFC\| > 1, i.e. at least a 2-fold change. |
 | **Analysis A vs B** | A uses all 6 Maris Piper arrays. B drops one borderline Reg P array as a robustness check. |
 | **GO (Gene Ontology)** | A controlled vocabulary of gene functions with three branches: biological process, molecular function and cellular component. |
 | **KEGG** | A database of metabolic and signalling pathways. Potato PGSC IDs could not be mapped to it, so there is no KEGG enrichment (see Stage 3). |
-| **Enrichment (over-representation) analysis** | Tests whether a function appears among the DEGs more often than expected, given the **background (universe)**: the genes that could have been detected. It uses a hypergeometric test (`clusterProfiler::enricher`). |
+| **Enrichment (over-representation) analysis** | Tests whether a function appears among the DEGs more often than expected, given the **background (universe)**: the genes that were actually tested (passed the Stage 1 filter, control probes removed). It uses a hypergeometric test (`clusterProfiler::enricher`). |
 | **PGSC IDs** | Potato Genome Sequencing Consortium identifiers from the DM v3.4 genome (2011). `PGSC0003DMT…` is a transcript, `PGSC0003DMG…` a gene. |
 | **BioMart / Ensembl Plants** | The online database that Stage 3 queries for GO terms and gene descriptions of the PGSC IDs. |
 | **BLAST distance tree** | A quick neighbour-joining tree that NCBI builds from BLAST pairwise alignments. It is a useful picture of sequence similarity, but not a formal phylogenetic analysis. |
@@ -298,39 +303,69 @@ change (Low P relative to Reg P), and `adj.P.Val` is the FDR-adjusted p-value.
 | Stage 1: *SDRF not found* or *raw file(s) … are missing* | Run `Rscript download_data.R`, or compare your folders with the tree in section 5. File names must match the SDRF exactly, with no sub-folders inside `data/raw/`. |
 | Stage 2/3/4: *Missing input file(s): results/…* | Render the earlier stages first, in order. |
 | Stage 3: BioMart timeout, *Unable to query the Ensembl site*, HTTP 500/503 | Ensembl Plants is busy or down. Wait and re-knit, and check <https://plants.ensembl.org>. A VPN or institutional firewall can also block it. |
-| Stage 3: GO results differ slightly from the README | Ensembl Plants annotation changes between releases (see section 10, point 7). Small differences are expected. |
+| Stage 2/3/4: *normalised_data.RData still contains control probes* or *no computed cat_summary* | The `.RData` files were made by an older version of the notebooks. Re-render Stages 1, 2 and 3 in order. |
+| Stage 3: GO results differ from an earlier run | Ensembl Plants annotation changes between releases (see section 10, point 7), and the analysis changes listed in section 10 also shift results. Small differences are expected. |
 | Stage 5: species "NOT found in tree" | Your BLAST hits differ from the author's. Edit `selected_species` to match the species listed in Step 1 of that notebook. |
 
 ---
 
 ## 10. Known limitations and analysis caveats
 
-The statistical methods are documented here, not changed. Reviewers and
-anyone reusing the pipeline should keep these points in mind:
+### Analysis changes
 
-1. **Enrichment background.** The GO universe is every PGSC-annotated gene on
-   the array. The more conservative choice is only the genes that passed the
-   Stage 1 expression filter. The current choice can inflate enrichment of
-   root-expressed functions.
-2. **No GO term survives BH correction.** GO results are reported at nominal
-   p < 0.05 and should be read as exploratory.
-3. **Control probes are kept** through filtering and limma, so they count
-   towards the multiple-testing correction. Stage 3 drops them before
-   annotation; the Stage 4 tables do not filter them explicitly.
-4. **Filtering order.** The negative-control noise threshold is computed
-   *after* a log2 > 5 pre-filter, so it is estimated only from the brighter
-   negative controls.
+Three corrections, approved by the project owner, were made after the
+author's original run. The limma design, contrasts, normalisation method and
+DEG thresholds are unchanged.
+
+- **Control probes removed before limma (Stage 1).** All Agilent control
+  probes (`ControlType != 0`) are dropped before `normalised_data.RData` is
+  saved, so they no longer enter Stages 2 and 4 or count towards the BH
+  correction.
+- **Noise threshold from all negative controls (Stage 1).** The 95th
+  percentile of the negative controls is now computed *before* the log2 > 5
+  pre-filter, so it is no longer estimated from the brighter controls only.
+- **Enrichment background = tested genes (Stage 3).** The GO universe is now
+  the genes that passed Stage 1 filtering (controls removed), mapped
+  DMT → DMG like the DEGs, and passed to `enricher(universe = …)`.
+- **Computed numbers.** Narrative numbers, the functional-category counts and
+  their "ALL UP" / "Mostly UP" / "Mixed" labels (Stages 3 and 4), the top-DEG
+  statements and the Stage 3 Methods paragraph are now computed from the data.
+  Claims that cannot be computed (the KEGG work done outside the notebooks,
+  literature estimates) are marked *to verify after re-run*.
+
+**Expect the results to change slightly** after re-running: DEG counts (fewer
+probes are tested, so the BH adjustment changes), inter-array correlations,
+GO enrichment p-values and term lists (smaller background), functional
+category counts and key-gene directions. Numbers from the original run that
+were quoted in this README have been removed; regenerate them by re-running
+the notebooks.
+
+### Caveats
+
+Reviewers and anyone reusing the pipeline should keep these points in mind:
+
+1. **Enrichment background.** *Fixed:* the GO universe is now the genes that
+   passed the Stage 1 expression filter (controls removed), not every
+   PGSC-annotated gene on the array.
+2. **No GO term survives BH correction** (in the original run). GO results
+   are reported at nominal p < 0.05 and should be read as exploratory. Stage 3
+   now reports the BH-significant count from the data.
+3. **Control probes.** *Fixed:* Stage 1 removes all control probes before
+   saving, so they no longer enter limma (Stages 2 and 4) or the
+   multiple-testing correction.
+4. **Filtering order.** *Fixed:* the negative-control noise threshold is now
+   computed from all negative controls, before the log2 > 5 pre-filter.
 5. **Probe vs gene counts.** DEGs are counted per probe. Several probes can
    map to one PGSC transcript, so gene-level counts can be lower.
-6. **Hard-coded numbers in the text and figures.** Parts of the narrative,
-   and the functional-category bar charts (Stage 3 `cat_summary`, Stage 4
-   `category_summary`), are typed in rather than computed. Some of these
-   statements also disagree with each other. The "top DEG" is given as:
-   - an ethylene-responsive gene with logFC 5.61 (Stage 3 summary);
-   - the ABC transporter at about 79-fold (earlier README);
-   - logFC about 6.5, i.e. about 91-fold (a Stage 4 comment).
-
-   Check these against your own rendered output.
+6. **Hard-coded numbers in the text and figures.** *Fixed:* the narrative
+   numbers, the functional-category bar charts (Stage 3 `cat_summary`, reused
+   by Stage 4 as `category_summary`) and their direction labels, and the
+   "top DEG" statements are now computed from the data. The old, mutually
+   inconsistent top-DEG claims (ethylene-responsive gene with logFC 5.61;
+   ABC transporter at about 79-fold; logFC about 6.5, i.e. about 91-fold) were
+   removed. Still typed in and marked *to verify*: the KEGG ortholog count
+   (point 8), the ~60% PGSC annotation estimate, and the Stage 1 description
+   of the first raw probes (raw data, unaffected by the fixes).
 7. **Genome versions.** The probes carry PGSC v3.4 transcript IDs, but
    Ensembl Plants now serves the DM v6.1 assembly. The `DMT → DMG` swap only
    matches genes whose PGSC IDs are still present in Ensembl, which lowers
