@@ -39,7 +39,7 @@ knitr::opts_chunk$set(
 
 ## What We Are Doing
 
-In Stage 1 we loaded, quality-checked, background-corrected, quantile-normalised, and filtered 24 Agilent microarray files from the E-MTAB-2990 dataset (Hedley, 2017). The output was a clean expression matrix of **38,885 probes × 24 samples** saved as `normalised_data.RData`.
+In Stage 1 we loaded, quality-checked, background-corrected, quantile-normalised, and filtered 24 Agilent microarray files from the E-MTAB-2990 dataset (Hedley, 2017). The output was a clean expression matrix (filtered probes × 24 samples, Agilent control probes removed) saved as `normalised_data.RData`. The exact probe count is printed when the data are loaded below.
 
 Stage 2 asks the core biological question:
 
@@ -52,7 +52,7 @@ Stage 2 asks the core biological question:
 A **differentially expressed gene (DEG)** has statistically different activity between two conditions. We apply two simultaneous criteria:
 
 - **|log2 Fold Change| > 1** — at minimum a 2-fold change in expression
-- **Adjusted p-value < 0.05** — statistically significant after correcting for testing 38,885 hypotheses simultaneously
+- **Adjusted p-value < 0.05** — statistically significant after correcting for testing every filtered probe (one hypothesis per probe) simultaneously
 
 **Why log2?** Because fold changes are multiplicative. A 2× increase and a 2× decrease are symmetric in log2 space (log2(2) = 1, log2(0.5) = −1). This is the universal convention in microarray and RNA-seq analysis (Smyth, 2004).
 
@@ -64,7 +64,7 @@ limma (Linear Models for Microarray Analysis) is the gold-standard package for m
 
 ### Why BH FDR Correction?
 
-When testing 38,885 probes at p<0.05, we expect ~1,944 false positives by chance alone. Benjamini-Hochberg (BH) correction controls the **False Discovery Rate** — the expected proportion of false positives among significant results.
+When testing tens of thousands of probes at p<0.05, about 5% of the probes that are truly unchanged would pass by chance alone (the exact number of probes tested is printed in the DEG summary below). Benjamini-Hochberg (BH) correction controls the **False Discovery Rate** — the expected proportion of false positives among significant results.
 
 > **Evidence:** Benjamini Y & Hochberg Y (1995). Controlling the false discovery rate: a practical and powerful approach to multiple testing. *JRSS-B* 57(1):289–300.
 
@@ -75,7 +75,7 @@ When testing 38,885 probes at p<0.05, we expect ~1,944 false positives by chance
 | **A — With outlier** | 6 (3 Low P + 3 Reg P) | Main result |
 | **B — Without outlier** | 5 (3 Low P + 2 Reg P) | Robustness/sensitivity check |
 
-The PCA in Stage 1 identified one Reg P replicate (US10310381_253303310046_S01_GE1_107_Sep09_1_4.txt) as an outlier. Inter-array correlation for this sample ranged from r=0.890–0.927, i.e. its lowest pairwise correlation fell just below the r=0.90 threshold recommended by Shi et al. (2006, MAQC study) while the others were above it — a borderline case rather than a clear failure. By running both analyses, we can assess whether our conclusions are driven by this variable replicate or reflect genuine biology.
+The PCA in Stage 1 identified one Reg P replicate (US10310381_253303310046_S01_GE1_107_Sep09_1_4.txt) as an outlier. In the author's original run (before control probes were removed in Stage 1) its inter-array correlations ranged from r=0.890–0.927, i.e. its lowest pairwise correlation fell just below the r=0.90 threshold recommended by Shi et al. (2006, MAQC study) while the others were above it — a borderline case rather than a clear failure. The range for the current data is computed and printed in the next section; *to verify after re-run* that this sample is still the borderline one. By running both analyses, we can assess whether our conclusions are driven by this variable replicate or reflect genuine biology.
 
 ---
 
@@ -118,7 +118,14 @@ cat("Expression matrix:", nrow(norm_filtered$E), "probes x",
     ncol(norm_filtered$E), "samples\n")
 cat("Sample metadata rows:", nrow(targets), "\n")
 cat("Probes have rownames:", !is.null(rownames(norm_filtered$E)), "\n")
-cat("First 3 probe row names:", paste(head(rownames(norm_filtered$E), 3), collapse=", "), "\n\n")
+cat("First 3 probe row names:", paste(head(rownames(norm_filtered$E), 3), collapse=", "), "\n")
+# Stage 1 removes all Agilent control probes; stop if an old RData is loaded
+if (is.null(norm_filtered$genes$ControlType) ||
+    any(norm_filtered$genes$ControlType != 0)) {
+  stop("normalised_data.RData still contains control probes (or lacks ControlType).\n",
+       "Re-render 01_load_QC_FIXED.Rmd to regenerate it.")
+}
+cat("Control probes present:", FALSE, "\n\n")
 
 cat("=== SAMPLE SUMMARY ===\n")
 print(table(targets$Cultivar, targets$Condition))
@@ -173,8 +180,12 @@ cat("\n=== OUTLIER IDENTIFICATION ===\n")
 cat("Outlier file:", OUTLIER_FILE, "\n")
 cat("Outlier position in MP matrix (column):", outlier_col, "\n")
 cat("Outlier condition:", mp_targets$Condition[outlier_col], "\n")
-cat("Evidence: Inter-array correlation r=0.890-0.927; minimum just\n")
-cat("below the r=0.90 threshold (Shi et al. 2006, MAQC) — borderline\n")
+# Computed (not typed in): correlations of the outlier with the other 5 MP arrays
+outlier_r <- cor(mp_expr, method = "pearson")[outlier_col, -outlier_col]
+cat("Evidence: Inter-array correlation r =", sprintf("%.3f", min(outlier_r)), "-",
+    sprintf("%.3f", max(outlier_r)), "\n")
+cat("Minimum vs r = 0.90 threshold (Shi et al. 2006, MAQC):",
+    ifelse(min(outlier_r) < 0.90, "below — borderline", "NOT below — re-check outlier choice"), "\n")
 ```
 
 ---
@@ -334,7 +345,7 @@ cat("  Reg.P column: identifies the 3 Reg P replicates\n")
 
 ```{r fit-contrast-A}
 # ── Step 1: Fit linear model ──────────────────────────────────────────────
-# lmFit fits a linear model to EVERY probe simultaneously (38,885 models)
+# lmFit fits a linear model to EVERY probe simultaneously (one model per filtered probe)
 # For each probe it estimates: mean expression in Low P, mean in Reg P
 # ─────────────────────────────────────────────────────────────────────────
 
